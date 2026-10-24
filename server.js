@@ -40,6 +40,53 @@ app.use('/api/auth', require('./routes/auth'));
 app.use('/api/exam', require('./routes/exam'));
 app.use('/api/admin', require('./routes/admin'));
 
+const recentMessages = [];
+const MAX_RECENT = 50;
+
+function addRecentMessage(msg) {
+  recentMessages.push(msg);
+  if (recentMessages.length > MAX_RECENT) recentMessages.shift();
+}
+
+app.post('/api/chat', async (req, res) => {
+  if (!req.session || !req.session.userId) return res.status(401).json({ error: '로그인 필요' });
+  const { message } = req.body;
+  if (!message || typeof message !== 'string') return res.status(400).json({ error: '메시지 필요' });
+  const msg = message.trim().substring(0, 500);
+  if (!msg) return res.status(400).json({ error: '빈 메시지' });
+  try {
+    const snap = await db.ref(`users/${req.session.userId}`).once('value');
+    const user = snap.val();
+    if (!user) return res.status(404).json({ error: '유저 없음' });
+    const chatMsg = {
+      nickname: user.nickname,
+      rank: RANKS[user.rank_index],
+      message: msg,
+      isAdmin: !!user.is_admin,
+      timestamp: Date.now()
+    };
+    addRecentMessage(chatMsg);
+    await db.ref('chat_messages').push().set({
+      user_id: req.session.userId,
+      nickname: user.nickname,
+      message: msg,
+      sent_at: Date.now()
+    });
+    if (io) io.emit('chat', chatMsg);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: '전송 실패' });
+  }
+});
+
+app.get('/api/poll', (req, res) => {
+  if (!req.session || !req.session.userId) return res.status(401).json({ error: '로그인 필요' });
+  const since = parseInt(req.query.since) || Date.now() - 5000;
+  const messages = recentMessages.filter(m => m.timestamp > since);
+  const online = Array.from(onlineUsers.values()).map(u => ({ nickname: u.nickname, userId: u.userId }));
+  res.json({ messages, online, timestamp: Date.now() });
+});
+
 const onlineUsers = new Map();
 
 io.on('connection', (socket) => {
@@ -562,7 +609,12 @@ setInterval(async () => {
 }, 30000);
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log(`대한민국 육군 게임 서버가 포트 ${PORT}에서 실행 중입니다.`);
-  console.log(`http://localhost:${PORT}`);
-});
+
+if (process.env.VERCEL) {
+  module.exports = app;
+} else {
+  server.listen(PORT, () => {
+    console.log(`대한민국 육군 게임 서버가 포트 ${PORT}에서 실행 중입니다.`);
+    console.log(`http://localhost:${PORT}`);
+  });
+}
