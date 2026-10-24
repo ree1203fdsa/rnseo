@@ -30,6 +30,35 @@ function getRankColor(idx) {
   }
 }
 
+function createUniformTexture(rankIndex) {
+  const canvas = document.createElement('canvas');
+  canvas.width = 128;
+  canvas.height = 128;
+  const ctx = canvas.getContext('2d');
+  const palette = rankIndex <= 4
+    ? ['#4d5945', '#67654d', '#353d32', '#82765b', '#555b48']
+    : ['#3d4935', '#505343', '#30392d', '#68634b', '#454a38'];
+  ctx.fillStyle = palette[0];
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  // Deterministic, blocky digital-camouflage patches that tile across the
+  // block-shaped arms, legs and torso, like a printed uniform fabric.
+  for (let y = 0; y < 128; y += 8) {
+    for (let x = 0; x < 128; x += 8) {
+      const seed = (x * 17 + y * 31 + x * y * 7) % 23;
+      if (seed < 12) continue;
+      ctx.fillStyle = palette[seed % palette.length];
+      const inset = seed % 3;
+      ctx.fillRect(x + inset, y + (seed % 2), 4 + (seed % 5), 3 + (seed % 4));
+    }
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(2, 2);
+  texture.magFilter = THREE.NearestFilter;
+  texture.minFilter = THREE.NearestMipmapNearestFilter;
+  return texture;
+}
+
 let currentUser = null;
 let socket = null;
 
@@ -143,6 +172,7 @@ function trySocketIO() {
     socket = io({ transports: ['polling', 'websocket'], reconnectionAttempts: 3, timeout: 5000 });
     socket.on('connect', () => { appendSystem('[연결] 서버 접속 완료'); });
     socket.on('system', (msg) => appendSystem(msg));
+    socket.on('openOutfitSelector', () => openOutfitSelector());
     socket.on('playerJailed', (data) => {
       if (data.userId === currentUser.id) showJailOverlay({ reason: '수감됨', releaseAt: data.releaseAt });
     });
@@ -180,7 +210,8 @@ function startFirebaseRealtime() {
         rankIndex: data.rankIndex || 0,
         x: data.x || 0,
         y: data.y || 0,
-        z: data.z || 0
+        z: data.z || 0,
+        outfitMode: data.outfitMode || 'rank'
       });
     });
     // Remove players no longer in the list
@@ -220,6 +251,7 @@ function sendFirebasePosition() {
   firebaseDB.ref('player_positions/' + currentUser.id).set({
     nickname: currentUser.nickname,
     rankIndex: currentUser.rankIndex || 0,
+    outfitMode: currentUser.outfitMode || 'rank',
     x: Math.round(player.position.x * 10) / 10,
     y: Math.round(player.position.y * 10) / 10,
     z: Math.round(player.position.z * 10) / 10,
@@ -237,13 +269,92 @@ function cleanupFirebase() {
   firebaseListenersActive = false;
 }
 
+function openOutfitSelector() {
+  const modal = document.getElementById('outfit-modal');
+  if (modal) {
+    document.getElementById('outfit-status').textContent = '';
+    modal.classList.add('active');
+  }
+}
+
+function closeOutfitSelector() {
+  document.getElementById('outfit-modal').classList.remove('active');
+}
+
+async function selectOutfit(outfitMode) {
+  const status = document.getElementById('outfit-status');
+  status.textContent = '복장을 변경하는 중...';
+  let res;
+  try {
+    res = await fetch('/api/outfit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ outfitMode })
+    });
+  } catch (e) {
+    console.error('Outfit request failed:', e);
+    status.textContent = '서버에 연결할 수 없습니다. 게임 서버가 실행 중인지 확인해주세요.';
+    return;
+  }
+
+  let data;
+  try {
+    data = await res.json();
+  } catch (e) {
+    status.textContent = `서버 응답을 읽지 못했습니다 (HTTP ${res.status}). 서버를 재시작하거나 최신 버전을 배포해주세요.`;
+    return;
+  }
+  if (!res.ok) {
+    status.textContent = data.error || `복장을 변경하지 못했습니다 (HTTP ${res.status}).`;
+    return;
+  }
+
+  try {
+    currentUser.outfitMode = data.outfitMode;
+    const oldPosition = player.position.clone();
+    const oldRotation = player.rotation.clone();
+    scene.remove(player);
+    player = buildSoldierModel(currentUser.rankIndex || 18, true, currentUser.outfitMode);
+    player.position.copy(oldPosition);
+    player.rotation.copy(oldRotation);
+    scene.add(player);
+    if (firebaseListenersActive) sendFirebasePosition();
+    status.textContent = '복장을 변경했습니다.';
+    setTimeout(closeOutfitSelector, 500);
+  } catch (e) {
+    console.error('Outfit was saved but model update failed:', e);
+    status.textContent = '복장은 저장됐지만 캐릭터에 적용하지 못했습니다. 페이지를 새로고침해주세요.';
+  }
+}
+
 // ==================== CHAT ====================
 function sendChat() {
   const input = document.getElementById('chat-input');
   const msg = input.value.trim();
   if (!msg) return;
 
-  if (msg.startsWith('/') && socket && socket.connected) {
+  if (msg === '/복장') {
+    openOutfitSelector();
+    fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ message: msg })
+    }).then(async res => {
+      const data = await res.json();
+      if (!res.ok) {
+        document.getElementById('outfit-status').textContent = data.error || '대장 계정 권한을 확인하지 못했습니다.';
+        appendSystem(data.error || '[오류] 복장 선택 권한을 확인하지 못했습니다.');
+      } else if (!data.openOutfitSelector) {
+        document.getElementById('outfit-status').textContent = '서버가 복장 선택 명령을 처리하지 않았습니다. 서버를 재시작하고 새로고침해주세요.';
+        appendSystem('[오류] 서버가 복장 선택 명령을 처리하지 않았습니다. 서버를 다시 시작해주세요.');
+      }
+    }).catch(() => {
+      document.getElementById('outfit-status').textContent = '서버 연결을 확인할 수 없습니다. 서버를 재시작하고 새로고침해주세요.';
+      appendSystem('[오류] 복장 선택창을 열지 못했습니다. 서버 연결을 확인해주세요.');
+    });
+  } else if (msg.startsWith('/') && socket && socket.connected) {
     socket.emit('chat', { message: msg });
   } else if (msg.startsWith('/')) {
     fetch('/api/chat', {
@@ -251,6 +362,10 @@ function sendChat() {
       headers: { 'Content-Type': 'application/json' },
       credentials: 'same-origin',
       body: JSON.stringify({ message: msg })
+    }).then(async res => {
+      const data = await res.json();
+      if (!res.ok) appendSystem(data.error || '[오류] 명령어 처리 실패');
+      else if (data.openOutfitSelector) openOutfitSelector();
     }).catch(() => appendSystem('[오류] 명령어 전송 실패'));
   } else if (typeof firebaseDB !== 'undefined') {
     firebaseDB.ref('chat_messages').push().set({
@@ -1237,15 +1352,25 @@ function parseOBJ(text, modelType) {
 }
 
 // ==================== SOLDIER MODEL (RANK-BASED) ====================
-function buildSoldierModel(rankIndex, isMainPlayer) {
+function buildSoldierModel(rankIndex, isMainPlayer, outfitMode = 'rank') {
   const group = new THREE.Group();
   const rc = getRankColor(rankIndex);
   const tier = getRankTier(rankIndex);
   const skinMat = new THREE.MeshPhongMaterial({ color: 0xf5c5a3, shininess: 20 });
-  const uniformMat = new THREE.MeshPhongMaterial({ color: rc.uniform, shininess: 8 });
+  const camoUniform = outfitMode === 'field' || outfitMode === 'tactical' ||
+    (outfitMode === 'rank' && (tier === 'soldier' || tier === 'nco'));
+  const uniformMat = new THREE.MeshPhongMaterial({
+    color: camoUniform ? 0xffffff : (outfitMode === 'dress' && tier === 'general' ? 0x24301c : rc.uniform),
+    map: camoUniform ? createUniformTexture(rankIndex) : null,
+    shininess: 8
+  });
   const bootMat = new THREE.MeshPhongMaterial({ color: 0x1a1a1a, shininess: 30 });
   const beltMat = new THREE.MeshPhongMaterial({ color: tier === 'general' ? 0x4a3a1a : 0x2a2a1a, shininess: 15 });
   const helmetMat = new THREE.MeshPhongMaterial({ color: rc.helmet, shininess: 12 });
+  const trimMat = new THREE.MeshPhongMaterial({
+    color: tier === 'general' ? 0xd4af37 : 0xc0a030,
+    shininess: 55
+  });
 
   // Legs
   const legL = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.9, 0.35), uniformMat);
@@ -1263,6 +1388,80 @@ function buildSoldierModel(rankIndex, isMainPlayer) {
   const torso = new THREE.Mesh(new THREE.BoxGeometry(0.8, 1.0, 0.45), uniformMat);
   torso.position.y = 1.4; torso.castShadow = true; group.add(torso);
 
+  // Give each career tier a distinct uniform cut and finish.
+  if (tier === 'soldier') {
+    // Field blouse seam and subdued camouflage panels.
+    const camoMat = new THREE.MeshPhongMaterial({ color: 0x596447, shininess: 4 });
+    [[-0.29, 1.42], [0.29, 1.42], [-0.29, 1.12], [0.29, 1.12]].forEach(([x, y]) => {
+      const patch = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.12, 0.018), camoMat);
+      patch.position.set(x, y, 0.235); group.add(patch);
+    });
+    const placket = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.72, 0.025), pocketMatFallback());
+    placket.position.set(0, 1.4, 0.24); group.add(placket);
+  } else if (tier === 'nco') {
+    // NCO field jacket: darker reinforced chest and brass collar tabs.
+    const panelMat = new THREE.MeshPhongMaterial({ color: 0x344329, shininess: 12 });
+    const panel = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.72, 0.025), panelMat);
+    panel.position.set(0, 1.4, 0.24); group.add(panel);
+    [[-0.2, 1.79], [0.2, 1.79]].forEach(([x, y]) => {
+      const tab = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.07, 0.035), trimMat);
+      tab.position.set(x, y, 0.23); tab.rotation.z = x < 0 ? 0.25 : -0.25; group.add(tab);
+    });
+    // Compact blocky field vest with front utility pouches.
+    const vestMat = new THREE.MeshPhongMaterial({ color: 0x34392d, shininess: 5 });
+    const vest = new THREE.Mesh(new THREE.BoxGeometry(0.72, 0.62, 0.12), vestMat);
+    vest.position.set(0, 1.37, 0.285); group.add(vest);
+    [-0.22, 0, 0.22].forEach(x => {
+      const pouch = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.17, 0.08), vestMat);
+      pouch.position.set(x, 1.3, 0.38); group.add(pouch);
+    });
+  } else if (tier === 'officer') {
+    // Tailored command jacket with a clean center seam, collar tabs and cuffs.
+    const seam = new THREE.Mesh(new THREE.BoxGeometry(0.025, 0.78, 0.025), trimMat);
+    seam.position.set(0, 1.4, 0.24); group.add(seam);
+    [[-0.2, 1.79], [0.2, 1.79]].forEach(([x, y]) => {
+      const tab = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.08, 0.04), trimMat);
+      tab.position.set(x, y, 0.235); tab.rotation.z = x < 0 ? 0.25 : -0.25; group.add(tab);
+    });
+    [-0.55, 0.55].forEach(x => {
+      const cuff = new THREE.Mesh(new THREE.BoxGeometry(0.29, 0.09, 0.3), trimMat);
+      cuff.position.set(x, 1.02, 0); group.add(cuff);
+    });
+  } else if (tier === 'general' && (outfitMode === 'rank' || outfitMode === 'dress')) {
+    // General officer dress tunic: gold front braid, collar and sleeve cuffs.
+    const braid = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.78, 0.035), trimMat);
+    braid.position.set(0, 1.4, 0.245); group.add(braid);
+    [[-0.2, 1.79], [0.2, 1.79]].forEach(([x, y]) => {
+      const tab = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.09, 0.045), trimMat);
+      tab.position.set(x, y, 0.235); tab.rotation.z = x < 0 ? 0.25 : -0.25; group.add(tab);
+    });
+    [-0.55, 0.55].forEach(x => {
+      const cuff = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.12, 0.31), trimMat);
+      cuff.position.set(x, 1.02, 0); group.add(cuff);
+    });
+    const sash = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.1, 0.5), trimMat);
+    sash.position.set(0, 1.02, 0); sash.rotation.z = -0.08; group.add(sash);
+    // Medal ribbon and chest decorations on the general's dress uniform.
+    const ribbonMat = new THREE.MeshPhongMaterial({ color: 0x9b3030, shininess: 30 });
+    const ribbon = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.08, 0.035), ribbonMat);
+    ribbon.position.set(0.2, 1.58, 0.255); group.add(ribbon);
+    for (let i = 0; i < 3; i++) {
+      const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.025, 0.08, 0.008),
+        new THREE.MeshBasicMaterial({ color: [0xffffff, 0x315b9a, 0xf0d050][i] }));
+      stripe.position.set(0.1 + i * 0.09, 1.58, 0.278); group.add(stripe);
+    }
+  }
+
+  if (outfitMode === 'tactical' && tier !== 'nco') {
+    const vestMat = new THREE.MeshPhongMaterial({ color: 0x34392d, shininess: 5 });
+    const vest = new THREE.Mesh(new THREE.BoxGeometry(0.72, 0.62, 0.13), vestMat);
+    vest.position.set(0, 1.37, 0.29); group.add(vest);
+    [-0.22, 0, 0.22].forEach(x => {
+      const pouch = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.17, 0.08), vestMat);
+      pouch.position.set(x, 1.3, 0.39); group.add(pouch);
+    });
+  }
+
   // Belt
   const belt = new THREE.Mesh(new THREE.BoxGeometry(0.85, 0.12, 0.5), beltMat);
   belt.position.y = 0.95; group.add(belt);
@@ -1277,13 +1476,54 @@ function buildSoldierModel(rankIndex, isMainPlayer) {
     p.position.set(px, py, 0.26); group.add(p);
   });
 
-  // Shoulders with rank epaulets
-  const shoulderMat = tier === 'officer' || tier === 'general'
-    ? new THREE.MeshPhongMaterial({ color: rc.badge || rc.uniform, shininess: 40 })
-    : uniformMat;
+  // Rank-specific shoulder boards: chevrons for enlisted/NCOs, bars for
+  // officers, and stars for generals. Distinct counts make all ranks readable.
+  const shoulderMat = new THREE.MeshPhongMaterial({
+    color: tier === 'soldier' ? 0x38472f : (rc.badge || 0xc0a030),
+    shininess: tier === 'soldier' ? 8 : 40
+  });
+  const insigniaMat = new THREE.MeshPhongMaterial({
+    color: tier === 'soldier' ? 0xc8c9b7 : (tier === 'general' ? 0xffd700 : 0xf0d879),
+    shininess: 65
+  });
   [[-0.5, 1.88], [0.5, 1.88]].forEach(([sx, sy]) => {
     const sh = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.08, 0.4), shoulderMat);
     sh.position.set(sx, sy, 0); group.add(sh);
+
+    if (tier === 'soldier' || tier === 'nco') {
+      // 훈련병 has a plain board; enlisted ranks get 1–4 stripes,
+      // NCO ranks get 1–4 brass chevrons.
+      const count = rankIndex === 0 ? 0 : tier === 'soldier' ? rankIndex : rankIndex - 4;
+      for (let i = 0; i < count; i++) {
+        const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.025, 0.025), insigniaMat);
+        stripe.position.set(sx, sy + 0.052, -0.12 + i * 0.075);
+        stripe.rotation.x = -0.25;
+        group.add(stripe);
+      }
+    } else if (tier === 'officer') {
+      // 1–3 parallel gold bars, then 1–3 small diamonds for field-grade officers.
+      const bars = rankIndex <= 11 ? rankIndex - 8 : 0;
+      const diamonds = rankIndex >= 12 ? rankIndex - 11 : 0;
+      for (let i = 0; i < bars; i++) {
+        const bar = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.025, 0.035), insigniaMat);
+        bar.position.set(sx, sy + 0.052, -0.07 + i * 0.07);
+        group.add(bar);
+      }
+      for (let i = 0; i < diamonds; i++) {
+        const diamond = new THREE.Mesh(new THREE.OctahedronGeometry(0.045, 0), insigniaMat);
+        diamond.position.set(sx, sy + 0.065, -0.07 + i * 0.07);
+        diamond.scale.set(0.75, 0.75, 1.25);
+        group.add(diamond);
+      }
+    } else {
+      // One to four stars for 준장 through 대장.
+      const count = rankIndex - 14;
+      for (let i = 0; i < count; i++) {
+        const star = new THREE.Mesh(new THREE.OctahedronGeometry(0.05, 0), insigniaMat);
+        star.position.set(sx, sy + 0.07, -0.105 + i * 0.07);
+        group.add(star);
+      }
+    }
   });
 
   // Arms
@@ -1305,7 +1545,7 @@ function buildSoldierModel(rankIndex, isMainPlayer) {
   head.position.y = 2.2; head.castShadow = true; group.add(head);
 
   // Headgear (varies by rank)
-  if (tier === 'general') {
+  if (tier === 'general' && outfitMode !== 'field' && outfitMode !== 'tactical') {
     // Officer peaked cap
     const capMat = new THREE.MeshPhongMaterial({ color: 0x1a2510, shininess: 20 });
     const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.3, 0.2, 12), capMat);
@@ -1347,11 +1587,16 @@ function buildSoldierModel(rankIndex, isMainPlayer) {
   group.userData.legR = legR;
   group.userData.armL = armL;
   group.userData.armR = armR;
+  group.userData.outfitMode = outfitMode;
   return group;
 }
 
+function pocketMatFallback() {
+  return new THREE.MeshPhongMaterial({ color: 0x303c29, shininess: 5 });
+}
+
 function createPlayer() {
-  player = buildSoldierModel(currentUser.rankIndex || 0, true);
+  player = buildSoldierModel(currentUser.rankIndex || 0, true, currentUser.outfitMode || 'rank');
   player.position.set(0, 0, 15);
   scene.add(player);
   initWeapons();
@@ -1738,8 +1983,8 @@ function reloadWeapon() {
   }, 2000);
 }
 
-function createOtherPlayer(userId, nickname, rankIndex) {
-  const group = buildSoldierModel(rankIndex || 0, false);
+function createOtherPlayer(userId, nickname, rankIndex, outfitMode = 'rank') {
+  const group = buildSoldierModel(rankIndex || 0, false, outfitMode);
   const nameCanvas = createTextCanvas(nickname, 192, 48);
   const nameTag = new THREE.Mesh(new THREE.PlaneGeometry(2.5, 0.6), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(nameCanvas), transparent: true }));
   nameTag.position.y = 2.9;
@@ -1751,7 +1996,15 @@ function createOtherPlayer(userId, nickname, rankIndex) {
 
 function updateOtherPlayer(data) {
   let p = otherPlayers[data.userId];
-  if (!p) p = createOtherPlayer(data.userId, data.nickname, data.rankIndex);
+  if (p && p.userData.outfitMode !== (data.outfitMode || 'rank')) {
+    const position = p.position.clone();
+    const rotation = p.rotation.clone();
+    removeOtherPlayer(data.userId);
+    p = createOtherPlayer(data.userId, data.nickname, data.rankIndex, data.outfitMode || 'rank');
+    p.position.copy(position);
+    p.rotation.copy(rotation);
+  }
+  if (!p) p = createOtherPlayer(data.userId, data.nickname, data.rankIndex, data.outfitMode || 'rank');
   p.position.set(data.x, data.y || 0, data.z);
 }
 

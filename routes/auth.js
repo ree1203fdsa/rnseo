@@ -64,11 +64,13 @@ router.post('/register', async (req, res) => {
       success: true,
       user: {
         id: newRef.key,
+        username,
         nickname,
         rank: RANKS[0],
         rankIndex: 0,
         affiliation: '육군',
         isAdmin: false,
+        outfitMode: 'rank',
         position: ''
       }
     });
@@ -115,11 +117,13 @@ router.post('/login', async (req, res) => {
       success: true,
       user: {
         id: userId,
+        username: user.username,
         nickname: user.nickname,
         rank: RANKS[user.rank_index],
         rankIndex: user.rank_index,
         affiliation: user.affiliation,
         isAdmin: !!user.is_admin,
+        outfitMode: user.outfit_mode || 'rank',
         position: user.military_position || '',
         prison: prison
       }
@@ -152,11 +156,13 @@ router.get('/me', async (req, res) => {
     res.json({
       user: {
         id: req.session.userId,
+        username: user.username,
         nickname: user.nickname,
         rank: RANKS[user.rank_index],
         rankIndex: user.rank_index,
         affiliation: user.affiliation,
         isAdmin: !!user.is_admin,
+        outfitMode: user.outfit_mode || 'rank',
         position: user.military_position || '',
         prison: prison
       }

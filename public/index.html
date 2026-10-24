@@ -162,6 +162,33 @@
     <div id="jail-info">⛓️ 영창 수감 중 · <span id="jail-timer"></span> · 사유: <span id="jail-reason"></span></div>
   </div>
 
+  <!-- 대장 전용 복장 선택 -->
+  <div id="outfit-modal" class="modal-overlay">
+    <div class="modal outfit-modal">
+      <button class="close-btn" onclick="closeOutfitSelector()">&times;</button>
+      <h2>복장 선택</h2>
+      <p class="outfit-description">착용할 군복을 선택하세요.</p>
+      <div class="outfit-options">
+        <button class="outfit-option" onclick="selectOutfit('field')">
+          <span class="outfit-swatch outfit-swatch-field"></span>
+          <strong>야전 전투복</strong>
+          <small>위장무늬 전투복과 전투모</small>
+        </button>
+        <button class="outfit-option" onclick="selectOutfit('tactical')">
+          <span class="outfit-swatch outfit-swatch-tactical"></span>
+          <strong>전술 장비</strong>
+          <small>위장무늬 전투복과 방탄 조끼</small>
+        </button>
+        <button class="outfit-option" onclick="selectOutfit('dress')">
+          <span class="outfit-swatch outfit-swatch-dress"></span>
+          <strong>장성 정복</strong>
+          <small>짙은 녹색 정복과 훈장 장식</small>
+        </button>
+      </div>
+      <p id="outfit-status" class="outfit-status" aria-live="polite"></p>
+    </div>
+  </div>
+
   <!-- 계급 정보 모달 -->
   <div id="exam-modal" class="modal-overlay">
     <div class="modal">
