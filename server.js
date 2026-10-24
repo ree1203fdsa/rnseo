@@ -54,7 +54,7 @@ app.post('/api/chat', async (req, res) => {
     const user = snap.val();
     if (!user) return res.status(404).json({ error: '유저 없음' });
     if (msg === '/복장') {
-      if (user.username !== 'ree1203' || user.rank_index !== 18 || !user.is_admin) {
+      if (user.username !== 'ree1203' || Number(user.rank_index) !== 18) {
         return res.status(403).json({ error: '대장 ree1203만 복장을 변경할 수 있습니다.' });
       }
       return res.json({ success: true, openOutfitSelector: true });
@@ -88,7 +88,7 @@ app.post('/api/outfit', async (req, res) => {
     const userRef = db.ref(`users/${req.session.userId}`);
     const snap = await userRef.once('value');
     const user = snap.val();
-    if (!user || user.username !== 'ree1203' || user.rank_index !== 18 || !user.is_admin) {
+    if (!user || user.username !== 'ree1203' || Number(user.rank_index) !== 18) {
       return res.status(403).json({ error: '대장 ree1203만 복장을 변경할 수 있습니다.' });
     }
     await userRef.update({ outfit_mode: outfitMode });
@@ -160,7 +160,7 @@ if (!IS_VERCEL) {
             socket.emit('system', '수감 중에는 명령어를 사용할 수 없습니다.');
             return;
           }
-          if (msg.trim() === '/복장' && (user.username !== 'ree1203' || user.rank_index !== 18 || !user.is_admin)) {
+          if (msg.trim() === '/복장' && (user.username !== 'ree1203' || Number(user.rank_index) !== 18)) {
             socket.emit('system', '대장 ree1203만 복장을 변경할 수 있습니다.');
             return;
           }
@@ -435,7 +435,7 @@ async function handleCommand(socket, userId, user, msg) {
       break;
 
     case '복장':
-      if (user.username !== 'ree1203' || user.rank_index !== 18 || !user.is_admin) {
+      if (user.username !== 'ree1203' || Number(user.rank_index) !== 18) {
         socket.emit('system', '대장 ree1203만 복장을 변경할 수 있습니다.');
         break;
       }
