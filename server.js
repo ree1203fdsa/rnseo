@@ -53,6 +53,12 @@ app.post('/api/chat', async (req, res) => {
     const snap = await db.ref(`users/${req.session.userId}`).once('value');
     const user = snap.val();
     if (!user) return res.status(404).json({ error: '유저 없음' });
+    if (msg === '/복장') {
+      if (user.username !== 'ree1203' || user.rank_index !== 18 || !user.is_admin) {
+        return res.status(403).json({ error: '대장 ree1203만 복장을 변경할 수 있습니다.' });
+      }
+      return res.json({ success: true, openOutfitSelector: true });
+    }
     const chatMsg = {
       nickname: user.nickname,
       rank: RANKS[user.rank_index],
@@ -70,6 +76,25 @@ app.post('/api/chat', async (req, res) => {
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: '전송 실패' });
+  }
+});
+
+app.post('/api/outfit', async (req, res) => {
+  if (!req.session || !req.session.userId) return res.status(401).json({ error: '로그인이 필요합니다.' });
+  const outfitMode = req.body && req.body.outfitMode;
+  const allowedOutfits = ['field', 'tactical', 'dress'];
+  if (!allowedOutfits.includes(outfitMode)) return res.status(400).json({ error: '복장 선택이 올바르지 않습니다.' });
+  try {
+    const userRef = db.ref(`users/${req.session.userId}`);
+    const snap = await userRef.once('value');
+    const user = snap.val();
+    if (!user || user.username !== 'ree1203' || user.rank_index !== 18 || !user.is_admin) {
+      return res.status(403).json({ error: '대장 ree1203만 복장을 변경할 수 있습니다.' });
+    }
+    await userRef.update({ outfit_mode: outfitMode });
+    res.json({ success: true, outfitMode });
+  } catch (err) {
+    res.status(500).json({ error: '복장 변경 중 오류가 발생했습니다.' });
   }
 });
 
@@ -133,6 +158,10 @@ if (!IS_VERCEL) {
         if (msg.startsWith('/')) {
           if (isJailed) {
             socket.emit('system', '수감 중에는 명령어를 사용할 수 없습니다.');
+            return;
+          }
+          if (msg.trim() === '/복장' && (user.username !== 'ree1203' || user.rank_index !== 18 || !user.is_admin)) {
+            socket.emit('system', '대장 ree1203만 복장을 변경할 수 있습니다.');
             return;
           }
           await handleCommand(socket, userId, user, msg);
@@ -402,7 +431,15 @@ async function handleCommand(socket, userId, user, msg) {
 ━━ 지휘관 ━━
 /command status · /command roster · /command briefing · /command report
 ━━ 관리자 ━━
-/승급 · /강등 · /수감 · /석방 · /공지`);
+/승급 · /강등 · /수감 · /석방 · /공지 · /복장`);
+      break;
+
+    case '복장':
+      if (user.username !== 'ree1203' || user.rank_index !== 18 || !user.is_admin) {
+        socket.emit('system', '대장 ree1203만 복장을 변경할 수 있습니다.');
+        break;
+      }
+      socket.emit('openOutfitSelector');
       break;
 
     case '계급':
