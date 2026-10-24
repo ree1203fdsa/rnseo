@@ -127,9 +127,15 @@ async function checkSession() {
   } catch (e) {}
 }
 
-function enterGame() {
+async function enterGame() {
   document.getElementById('auth-screen').style.display = 'none';
   document.getElementById('game-screen').style.display = 'block';
+  if (typeof firebaseDB !== 'undefined' && currentUser && currentUser.id) {
+    try {
+      const snap = await firebaseDB.ref('users_outfit/' + currentUser.id).once('value');
+      if (snap.exists()) currentUser.outfitMode = snap.val().outfitMode || 'rank';
+    } catch (e) {}
+  }
   updateUserInfo();
   connectSocket();
   initGameWorld();
@@ -283,35 +289,21 @@ function closeOutfitSelector() {
 
 async function selectOutfit(outfitMode) {
   const status = document.getElementById('outfit-status');
+  const allowedOutfits = ['field', 'tactical', 'dress'];
+  if (!allowedOutfits.includes(outfitMode)) {
+    status.textContent = '올바르지 않은 복장입니다.';
+    return;
+  }
+  if (!currentUser || currentUser.nickname !== '이주람') {
+    status.textContent = '대장 이주람만 복장을 변경할 수 있습니다.';
+    return;
+  }
   status.textContent = '복장을 변경하는 중...';
-  let res;
   try {
-    res = await fetch('/api/outfit', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'same-origin',
-      body: JSON.stringify({ outfitMode })
-    });
-  } catch (e) {
-    console.error('Outfit request failed:', e);
-    status.textContent = '서버에 연결할 수 없습니다. 게임 서버가 실행 중인지 확인해주세요.';
-    return;
-  }
-
-  let data;
-  try {
-    data = await res.json();
-  } catch (e) {
-    status.textContent = `서버 응답을 읽지 못했습니다 (HTTP ${res.status}). 서버를 재시작하거나 최신 버전을 배포해주세요.`;
-    return;
-  }
-  if (!res.ok) {
-    status.textContent = data.error || `복장을 변경하지 못했습니다 (HTTP ${res.status}).`;
-    return;
-  }
-
-  try {
-    currentUser.outfitMode = data.outfitMode;
+    if (typeof firebaseDB !== 'undefined' && currentUser.id) {
+      await firebaseDB.ref('users_outfit/' + currentUser.id).set({ outfitMode: outfitMode });
+    }
+    currentUser.outfitMode = outfitMode;
     const oldPosition = player.position.clone();
     const oldRotation = player.rotation.clone();
     scene.remove(player);
@@ -323,8 +315,8 @@ async function selectOutfit(outfitMode) {
     status.textContent = '복장을 변경했습니다.';
     setTimeout(closeOutfitSelector, 500);
   } catch (e) {
-    console.error('Outfit was saved but model update failed:', e);
-    status.textContent = '복장은 저장됐지만 캐릭터에 적용하지 못했습니다. 페이지를 새로고침해주세요.';
+    console.error('Outfit change failed:', e);
+    status.textContent = '복장 변경 중 오류가 발생했습니다.';
   }
 }
 
@@ -335,25 +327,13 @@ function sendChat() {
   if (!msg) return;
 
   if (msg === '/복장') {
-    openOutfitSelector();
-    fetch('/api/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'same-origin',
-      body: JSON.stringify({ message: msg })
-    }).then(async res => {
-      const data = await res.json();
-      if (!res.ok) {
-        document.getElementById('outfit-status').textContent = data.error || '대장 계정 권한을 확인하지 못했습니다.';
-        appendSystem(data.error || '[오류] 복장 선택 권한을 확인하지 못했습니다.');
-      } else if (!data.openOutfitSelector) {
-        document.getElementById('outfit-status').textContent = '서버가 복장 선택 명령을 처리하지 않았습니다. 서버를 재시작하고 새로고침해주세요.';
-        appendSystem('[오류] 서버가 복장 선택 명령을 처리하지 않았습니다. 서버를 다시 시작해주세요.');
-      }
-    }).catch(() => {
-      document.getElementById('outfit-status').textContent = '서버 연결을 확인할 수 없습니다. 서버를 재시작하고 새로고침해주세요.';
-      appendSystem('[오류] 복장 선택창을 열지 못했습니다. 서버 연결을 확인해주세요.');
-    });
+    if (!currentUser || currentUser.nickname !== '이주람') {
+      appendSystem('[알림] 복장 변경은 대장 이주람만 사용할 수 있습니다.');
+    } else {
+      openOutfitSelector();
+    }
+    input.value = '';
+    return;
   } else if (msg.startsWith('/') && socket && socket.connected) {
     socket.emit('chat', { message: msg });
   } else if (msg.startsWith('/')) {
