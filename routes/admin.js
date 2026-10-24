@@ -221,6 +221,14 @@ router.post('/jail/:userId', requireAdmin, async (req, res) => {
       released: false
     });
 
+    await db.ref('jail_events/' + req.params.userId).set({
+      type: 'jail',
+      reason: reason || '관리자 처분',
+      minutes: duration,
+      releaseAt: releaseAt,
+      timestamp: Date.now()
+    });
+
     res.json({
       success: true,
       nickname: user.nickname,
@@ -249,6 +257,10 @@ router.post('/release/:userId', requireAdmin, async (req, res) => {
       }
     });
     if (released) {
+      await db.ref('jail_events/' + req.params.userId).set({
+        type: 'release',
+        timestamp: Date.now()
+      });
       res.json({ success: true, nickname });
     } else {
       res.status(400).json({ error: '현재 수감 중인 기록이 없습니다.' });

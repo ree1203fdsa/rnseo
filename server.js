@@ -372,6 +372,9 @@ async function handleCommand(socket, userId, user, msg) {
         released: false
       });
 
+      await db.ref('jail_events/' + targetId).set({
+        type: 'jail', reason, minutes: duration, releaseAt, timestamp: Date.now()
+      });
       io.emit('system', `[관리자] ${target.nickname}님이 "${reason}" 사유로 ${duration}분간 수감되었습니다.`);
       io.emit('playerJailed', { userId: targetId, nickname: target.nickname, releaseAt });
       break;
@@ -407,6 +410,7 @@ async function handleCommand(socket, userId, user, msg) {
       });
 
       if (released) {
+        await db.ref('jail_events/' + relId).set({ type: 'release', timestamp: Date.now() });
         io.emit('system', `[관리자] ${relNick}님이 석방되었습니다.`);
         io.emit('playerReleased', { userId: relId, nickname: relNick });
       } else {

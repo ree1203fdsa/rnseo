@@ -249,6 +249,19 @@ function startFirebaseRealtime() {
     });
   });
 
+  // Listen for jail/release events targeting this player
+  firebaseDB.ref('jail_events/' + myId).on('value', (snap) => {
+    const ev = snap.val();
+    if (!ev) return;
+    if (ev.type === 'jail') {
+      showJailOverlay({ reason: ev.reason || '수감됨', releaseAt: ev.releaseAt });
+      appendSystem(`[영창] ${ev.reason || '수감되었습니다.'} (${ev.minutes || '?'}분)`);
+    } else if (ev.type === 'release') {
+      hideJailOverlay();
+      appendSystem('[영창] 석방되었습니다.');
+    }
+  });
+
   appendSystem('[연결] 실시간 멀티플레이 연결 완료');
 }
 
@@ -413,11 +426,19 @@ function showJailOverlay(prison) {
   document.getElementById('jail-info').classList.add('active');
   if (prison.reason) document.getElementById('jail-reason').textContent = prison.reason;
   updateJailTimer(prison.releaseAt);
+  if (player) {
+    player.position.set(60, 0, -50);
+    if (firebaseListenersActive) sendFirebasePosition();
+  }
 }
 function hideJailOverlay() {
   document.getElementById('jail-overlay').classList.remove('active');
   document.getElementById('jail-info').classList.remove('active');
   if (jailTimer) { clearInterval(jailTimer); jailTimer = null; }
+  if (player) {
+    player.position.set(0, 0, 5);
+    if (firebaseListenersActive) sendFirebasePosition();
+  }
 }
 function updateJailTimer(releaseAt) {
   const timerEl = document.getElementById('jail-timer');
