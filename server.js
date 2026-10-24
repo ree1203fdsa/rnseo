@@ -1,6 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const session = require('express-session');
+const crypto = require('crypto');
 const path = require('path');
 const { initDatabase } = require('./database/init');
 
@@ -9,6 +10,78 @@ const db = initDatabase();
 app.set('db', db);
 
 const IS_VERCEL = !!process.env.VERCEL;
+
+// Vercel function instances do not share memory. Persist encrypted sessions
+// in Firebase so subsequent requests can recover the same login state.
+class FirebaseSessionStore extends session.Store {
+  constructor(database, secret) {
+    super();
+    this.database = database;
+    this.encryptionKey = crypto.createHash('sha256').update(secret).digest();
+  }
+
+  encrypt(value) {
+    const iv = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv('aes-256-gcm', this.encryptionKey, iv);
+    const encrypted = Buffer.concat([cipher.update(JSON.stringify(value), 'utf8'), cipher.final()]);
+    return {
+      version: 1,
+      iv: iv.toString('base64'),
+      tag: cipher.getAuthTag().toString('base64'),
+      data: encrypted.toString('base64')
+    };
+  }
+
+  decrypt(record) {
+    if (!record || record.version !== 1) throw new Error('Invalid session record');
+    const decipher = crypto.createDecipheriv('aes-256-gcm', this.encryptionKey, Buffer.from(record.iv, 'base64'));
+    decipher.setAuthTag(Buffer.from(record.tag, 'base64'));
+    const plain = Buffer.concat([
+      decipher.update(Buffer.from(record.data, 'base64')),
+      decipher.final()
+    ]).toString('utf8');
+    return JSON.parse(plain);
+  }
+
+  get(sid, callback) {
+    this.database.ref(`sessions/${sid}`).once('value').then(async snap => {
+      const record = snap.val();
+      if (!record) return callback(null, null);
+
+      let saved;
+      try {
+        saved = this.decrypt(record);
+      } catch (err) {
+        return callback(null, null);
+      }
+
+      const expires = saved.cookie && saved.cookie.expires
+        ? new Date(saved.cookie.expires).getTime()
+        : null;
+      if (expires && expires <= Date.now()) {
+        await this.database.ref(`sessions/${sid}`).set(null);
+        return callback(null, null);
+      }
+      callback(null, saved);
+    }).catch(callback);
+  }
+
+  set(sid, sess, callback) {
+    this.database.ref(`sessions/${sid}`).set(this.encrypt(sess))
+      .then(() => callback && callback(null))
+      .catch(err => callback && callback(err));
+  }
+
+  touch(sid, sess, callback) {
+    this.set(sid, sess, callback);
+  }
+
+  destroy(sid, callback) {
+    this.database.ref(`sessions/${sid}`).set(null)
+      .then(() => callback && callback(null))
+      .catch(err => callback && callback(err));
+  }
+}
 
 const RANKS = [
   '훈련병', '이등병', '일등병', '상등병', '병장',
@@ -20,9 +93,11 @@ const RANKS = [
 
 const sessionMiddleware = session({
   secret: process.env.SESSION_SECRET || 'army-game-secret',
+  store: IS_VERCEL ? new FirebaseSessionStore(db, process.env.SESSION_SECRET || 'army-game-secret') : undefined,
+  proxy: IS_VERCEL,
   resave: false,
   saveUninitialized: false,
-  cookie: { maxAge: 24 * 60 * 60 * 1000 }
+  cookie: { maxAge: 24 * 60 * 60 * 1000, secure: IS_VERCEL, sameSite: 'lax' }
 });
 
 app.use(sessionMiddleware);
