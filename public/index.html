@@ -184,8 +184,34 @@
           <strong>장성 정복</strong>
           <small>짙은 녹색 정복과 훈장 장식</small>
         </button>
+        <button class="outfit-option" onclick="selectOutfit('prisoner')">
+          <span class="outfit-swatch outfit-swatch-prisoner"></span>
+          <strong>영창복</strong>
+          <small>주황색 수감자 복장</small>
+        </button>
       </div>
       <p id="outfit-status" class="outfit-status" aria-live="polite"></p>
+    </div>
+  </div>
+
+  <!-- 텔레포트 모달 -->
+  <div id="teleport-modal" class="modal-overlay">
+    <div class="modal modal-lg">
+      <button class="close-btn" onclick="closeTeleport()">&times;</button>
+      <h2>텔레포트</h2>
+      <p style="color:var(--text-dim);margin:-6px 0 12px">이동할 건물을 선택하세요.</p>
+      <div id="teleport-list" class="teleport-grid"></div>
+    </div>
+  </div>
+
+  <!-- 서버 선택 모달 -->
+  <div id="server-modal" class="modal-overlay">
+    <div class="modal">
+      <button class="close-btn" onclick="closeServerModal()">&times;</button>
+      <h2>서버 선택</h2>
+      <p style="color:var(--text-dim);margin:-6px 0 12px">접속할 서버를 선택하세요.</p>
+      <div id="server-list" class="server-grid"></div>
+      <p id="server-status" class="outfit-status"></p>
     </div>
   </div>
 

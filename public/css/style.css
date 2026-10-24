@@ -662,7 +662,16 @@ body {
 .outfit-swatch-field { background: repeating-linear-gradient(135deg, #4d5945 0 8px, #67654d 8px 14px, #353d32 14px 20px, #82765b 20px 26px); }
 .outfit-swatch-tactical { background: linear-gradient(180deg, #596447 0 48%, #34392d 48% 100%); }
 .outfit-swatch-dress { background: linear-gradient(90deg, #24301c 0 47%, #c0a030 48% 51%, #24301c 52% 100%); }
+.outfit-swatch-prisoner { background: linear-gradient(180deg, #e87020 0 60%, #cc5500 60% 100%); }
 .outfit-status { min-height: 20px; margin: 14px 0 0; color: var(--accent); font-size: 13px; }
+.teleport-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; max-height: 400px; overflow-y: auto; }
+.teleport-btn { background: rgba(255,255,255,0.05); border: 1px solid var(--hud-border); border-radius: 6px; padding: 10px 8px; color: var(--text); cursor: pointer; font-size: 13px; text-align: center; transition: all 0.15s; }
+.teleport-btn:hover { border-color: var(--accent); background: rgba(212,196,90,0.12); color: var(--accent); }
+.server-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+.server-btn { background: rgba(255,255,255,0.06); border: 1px solid var(--hud-border); border-radius: 8px; padding: 14px 8px; color: var(--text); cursor: pointer; font-size: 15px; font-weight: 700; text-align: center; transition: all 0.15s; }
+.server-btn:hover { border-color: var(--accent); background: rgba(212,196,90,0.12); }
+.server-btn.active { border-color: var(--accent); background: rgba(212,196,90,0.2); color: var(--accent); }
+.server-btn .server-players { display: block; font-size: 11px; font-weight: 400; color: var(--text-dim); margin-top: 4px; }
 
 .modal h2 {
   color: var(--accent);

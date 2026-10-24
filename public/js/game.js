@@ -188,13 +188,17 @@ function trySocketIO() {
   } catch (e) {}
 }
 
+function serverPath(path) {
+  return `servers/${currentServer}/${path}`;
+}
+
 function startFirebaseRealtime() {
   if (firebaseListenersActive) return;
   firebaseListenersActive = true;
   const myId = currentUser.id;
 
   // Register presence
-  const presenceRef = firebaseDB.ref('online/' + myId);
+  const presenceRef = firebaseDB.ref(serverPath('online/' + myId));
   presenceRef.set({
     nickname: currentUser.nickname,
     rank: currentUser.rank,
@@ -203,8 +207,14 @@ function startFirebaseRealtime() {
   });
   presenceRef.onDisconnect().remove();
 
+  // Register in server_players for counts
+  firebaseDB.ref(`server_players/${currentServer}/${myId}`).set({
+    nickname: currentUser.nickname, rankIndex: currentUser.rankIndex
+  });
+  firebaseDB.ref(`server_players/${currentServer}/${myId}`).onDisconnect().remove();
+
   // Listen for other players' positions
-  firebaseDB.ref('player_positions').on('value', (snap) => {
+  firebaseDB.ref(serverPath('player_positions')).on('value', (snap) => {
     const positions = snap.val() || {};
     const seenIds = new Set();
     Object.entries(positions).forEach(([uid, data]) => {
@@ -227,7 +237,7 @@ function startFirebaseRealtime() {
   });
 
   // Listen for online users
-  firebaseDB.ref('online').on('value', (snap) => {
+  firebaseDB.ref(serverPath('online')).on('value', (snap) => {
     const online = snap.val() || {};
     const users = Object.entries(online).map(([id, u]) => ({
       nickname: u.nickname || id,
@@ -237,7 +247,7 @@ function startFirebaseRealtime() {
   });
 
   // Listen for new chat messages
-  firebaseDB.ref('chat_messages').orderByChild('sent_at').startAt(Date.now()).on('child_added', (snap) => {
+  firebaseDB.ref(serverPath('chat_messages')).orderByChild('sent_at').startAt(Date.now()).on('child_added', (snap) => {
     const msg = snap.val();
     if (!msg) return;
     appendChat({
@@ -267,7 +277,7 @@ function startFirebaseRealtime() {
 
 function sendFirebasePosition() {
   if (!firebaseListenersActive || !player || !currentUser) return;
-  firebaseDB.ref('player_positions/' + currentUser.id).set({
+  firebaseDB.ref(serverPath('player_positions/' + currentUser.id)).set({
     nickname: currentUser.nickname,
     rankIndex: currentUser.rankIndex || 0,
     outfitMode: currentUser.outfitMode || 'rank',
@@ -280,12 +290,207 @@ function sendFirebasePosition() {
 
 function cleanupFirebase() {
   if (!firebaseListenersActive || !currentUser) return;
-  firebaseDB.ref('online/' + currentUser.id).remove();
-  firebaseDB.ref('player_positions/' + currentUser.id).remove();
-  firebaseDB.ref('player_positions').off();
-  firebaseDB.ref('online').off();
-  firebaseDB.ref('chat_messages').off();
+  firebaseDB.ref(serverPath('online/' + currentUser.id)).remove();
+  firebaseDB.ref(serverPath('player_positions/' + currentUser.id)).remove();
+  firebaseDB.ref(`server_players/${currentServer}/${currentUser.id}`).remove();
+  firebaseDB.ref(serverPath('player_positions')).off();
+  firebaseDB.ref(serverPath('online')).off();
+  firebaseDB.ref(serverPath('chat_messages')).off();
   firebaseListenersActive = false;
+}
+
+// ==================== TELEPORT SYSTEM ====================
+function openTeleport() {
+  const modal = document.getElementById('teleport-modal');
+  const list = document.getElementById('teleport-list');
+  list.innerHTML = LOCATIONS.filter(l => l.type !== 'admin_bunker').map(l =>
+    `<button class="teleport-btn" onclick="teleportTo(${l.id})">${l.name}</button>`
+  ).join('');
+  modal.classList.add('active');
+}
+function closeTeleport() { document.getElementById('teleport-modal').classList.remove('active'); }
+function teleportTo(locId) {
+  const loc = LOCATIONS.find(l => l.id === locId);
+  if (!loc || !player) return;
+  player.position.set(loc.x, 0, loc.z + (loc.d / 2) + 2);
+  if (firebaseListenersActive) sendFirebasePosition();
+  closeTeleport();
+  appendSystem(`[텔레포트] ${loc.name}(으)로 이동했습니다.`);
+}
+
+// ==================== SERVER SYSTEM ====================
+let currentServer = 1;
+const MAX_SERVERS = 10;
+
+function openServerModal() {
+  const modal = document.getElementById('server-modal');
+  const list = document.getElementById('server-list');
+  document.getElementById('server-status').textContent = '';
+  // Count players per server from Firebase
+  if (typeof firebaseDB !== 'undefined') {
+    firebaseDB.ref('server_players').once('value').then(snap => {
+      const data = snap.val() || {};
+      let html = '';
+      for (let i = 1; i <= MAX_SERVERS; i++) {
+        const count = data[i] ? Object.keys(data[i]).length : 0;
+        const active = i === currentServer ? ' active' : '';
+        html += `<button class="server-btn${active}" onclick="switchServer(${i})">
+          ${i}서버<span class="server-players">${count}명</span></button>`;
+      }
+      list.innerHTML = html;
+    });
+  } else {
+    let html = '';
+    for (let i = 1; i <= MAX_SERVERS; i++) {
+      const active = i === currentServer ? ' active' : '';
+      html += `<button class="server-btn${active}" onclick="switchServer(${i})">${i}서버</button>`;
+    }
+    list.innerHTML = html;
+  }
+  modal.classList.add('active');
+}
+function closeServerModal() { document.getElementById('server-modal').classList.remove('active'); }
+
+function switchServer(num) {
+  if (num === currentServer) { closeServerModal(); return; }
+  const status = document.getElementById('server-status');
+  status.textContent = `${num}서버로 이동 중...`;
+  // Clean up old server using current server paths
+  if (typeof firebaseDB !== 'undefined' && currentUser) {
+    firebaseDB.ref(`server_players/${currentServer}/${currentUser.id}`).remove();
+    firebaseDB.ref(serverPath('player_positions/' + currentUser.id)).remove();
+    firebaseDB.ref(serverPath('online/' + currentUser.id)).remove();
+    firebaseDB.ref(serverPath('player_positions')).off();
+    firebaseDB.ref(serverPath('online')).off();
+    firebaseDB.ref(serverPath('chat_messages')).off();
+  }
+  // Remove other players
+  Object.keys(otherPlayers).forEach(uid => removeOtherPlayer(uid));
+
+  const oldServer = currentServer;
+  currentServer = num;
+  currentUser.server = num;
+
+  // Re-register on new server (serverPath now uses new currentServer)
+  if (typeof firebaseDB !== 'undefined' && currentUser) {
+    firebaseListenersActive = false;
+    startFirebaseRealtime();
+  }
+
+  // Reset position to spawn
+  if (player) player.position.set(0, 0, 5);
+  status.textContent = `${num}서버에 접속했습니다.`;
+  appendSystem(`[서버] ${oldServer}서버 → ${num}서버로 이동했습니다.`);
+  setTimeout(closeServerModal, 600);
+}
+
+// ==================== VEHICLE SYSTEM ====================
+let currentVehicle = null;
+let vehicleMeshes = [];
+const VEHICLE_SPAWNS = [
+  { id: 1, name: '군용 트럭', x: 70, z: 20, type: 'truck', speed: 0.35, color: 0x4a5a3a },
+  { id: 2, name: '지프', x: 75, z: 25, type: 'jeep', speed: 0.45, color: 0x3a4a2a },
+  { id: 3, name: '장갑차', x: 65, z: 15, type: 'apc', speed: 0.3, color: 0x5a6a4a },
+  { id: 4, name: '지휘 차량', x: 0, z: -5, type: 'command', speed: 0.4, color: 0x2a3a1e },
+  { id: 5, name: '수송 트럭', x: -50, z: 50, type: 'truck', speed: 0.3, color: 0x5a5a3a },
+];
+
+function createVehicles() {
+  VEHICLE_SPAWNS.forEach(v => {
+    const group = new THREE.Group();
+    const bodyMat = new THREE.MeshPhongMaterial({ color: v.color, shininess: 20 });
+    const wheelMat = new THREE.MeshPhongMaterial({ color: 0x222222 });
+    const glassMat = new THREE.MeshPhongMaterial({ color: 0x88aacc, transparent: true, opacity: 0.6, shininess: 80 });
+
+    if (v.type === 'truck') {
+      // Cab
+      const cab = new THREE.Mesh(new THREE.BoxGeometry(2.2, 1.8, 2.5), bodyMat);
+      cab.position.set(0, 0.9, 1.5); cab.castShadow = true; group.add(cab);
+      // Windshield
+      const ws = new THREE.Mesh(new THREE.PlaneGeometry(1.8, 1.2), glassMat);
+      ws.position.set(0, 1.4, 2.76); group.add(ws);
+      // Cargo bed
+      const bed = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.15, 4), bodyMat);
+      bed.position.set(0, 0.6, -1); group.add(bed);
+      // Side rails
+      [[-1.2], [1.2]].forEach(([sx]) => {
+        const rail = new THREE.Mesh(new THREE.BoxGeometry(0.08, 1.2, 4), bodyMat);
+        rail.position.set(sx, 1.2, -1); group.add(rail);
+      });
+      // Back gate
+      const gate = new THREE.Mesh(new THREE.BoxGeometry(2.4, 1.2, 0.08), bodyMat);
+      gate.position.set(0, 1.2, -3); group.add(gate);
+    } else if (v.type === 'jeep' || v.type === 'command') {
+      const body = new THREE.Mesh(new THREE.BoxGeometry(2, 1.4, 3.5), bodyMat);
+      body.position.set(0, 0.7, 0); body.castShadow = true; group.add(body);
+      // Windshield
+      const ws2 = new THREE.Mesh(new THREE.PlaneGeometry(1.6, 1.0), glassMat);
+      ws2.position.set(0, 1.2, 1.76); group.add(ws2);
+      // Roll bar
+      const bar1 = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 1.6, 6), new THREE.MeshPhongMaterial({ color: 0x333333 }));
+      bar1.position.set(0, 1.8, -0.5); bar1.rotation.z = Math.PI / 2; group.add(bar1);
+    } else if (v.type === 'apc') {
+      const body = new THREE.Mesh(new THREE.BoxGeometry(2.8, 1.8, 5), bodyMat);
+      body.position.set(0, 0.9, 0); body.castShadow = true; group.add(body);
+      // Turret hatch
+      const hatch = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.4, 0.3, 8), bodyMat);
+      hatch.position.set(0, 1.95, -0.5); group.add(hatch);
+      // Viewing slits
+      const slitMat = new THREE.MeshPhongMaterial({ color: 0x88aacc, emissive: 0x203040 });
+      for (let i = -1; i <= 1; i++) {
+        const slit = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.12, 0.05), slitMat);
+        slit.position.set(i * 0.8, 1.4, 2.53); group.add(slit);
+      }
+    }
+    // Wheels for all
+    const axleZ = v.type === 'truck' ? [-2.2, 0.8, 2.2] : [-1.2, 1.2];
+    axleZ.forEach(az => {
+      [[-1.1], [1.1]].forEach(([wx]) => {
+        const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.4, 0.25, 10), wheelMat);
+        wheel.rotation.z = Math.PI / 2;
+        wheel.position.set(wx + (wx > 0 ? 0.1 : -0.1), 0.4, az);
+        group.add(wheel);
+      });
+    });
+    // Headlights
+    [[-0.7], [0.7]].forEach(([hx]) => {
+      const hl = new THREE.Mesh(new THREE.SphereGeometry(0.12, 8, 8), new THREE.MeshPhongMaterial({ color: 0xffffcc, emissive: 0xaaaa44 }));
+      hl.position.set(hx, 0.8, v.type === 'truck' ? 2.75 : 1.76);
+      group.add(hl);
+    });
+
+    group.position.set(v.x, 0, v.z);
+    group.userData = { vehicleId: v.id, name: v.name, speed: v.speed, type: v.type };
+    scene.add(group);
+    vehicleMeshes.push(group);
+  });
+}
+
+function findNearestVehicle() {
+  if (!player) return null;
+  let nearest = null, minDist = 5;
+  vehicleMeshes.forEach(vm => {
+    const d = player.position.distanceTo(vm.position);
+    if (d < minDist) { minDist = d; nearest = vm; }
+  });
+  return nearest;
+}
+
+function toggleVehicle() {
+  if (currentVehicle) {
+    // Exit vehicle
+    player.visible = true;
+    player.position.copy(currentVehicle.position);
+    player.position.x += 2.5;
+    appendSystem(`[차량] ${currentVehicle.userData.name}에서 하차했습니다.`);
+    currentVehicle = null;
+  } else {
+    const v = findNearestVehicle();
+    if (!v) { appendSystem('[차량] 근처에 차량이 없습니다. 차량 정비고로 이동하세요.'); return; }
+    currentVehicle = v;
+    player.visible = false;
+    appendSystem(`[차량] ${v.userData.name}에 탑승했습니다. WASD로 조종, /차량으로 하차`);
+  }
 }
 
 function openOutfitSelector() {
@@ -302,7 +507,7 @@ function closeOutfitSelector() {
 
 async function selectOutfit(outfitMode) {
   const status = document.getElementById('outfit-status');
-  const allowedOutfits = ['field', 'tactical', 'dress'];
+  const allowedOutfits = ['field', 'tactical', 'dress', 'prisoner'];
   if (!allowedOutfits.includes(outfitMode)) {
     status.textContent = '올바르지 않은 복장입니다.';
     return;
@@ -347,6 +552,18 @@ function sendChat() {
     }
     input.value = '';
     return;
+  } else if (msg === '/텔레포트' || msg === '/tp') {
+    openTeleport();
+    input.value = '';
+    return;
+  } else if (msg === '/서버') {
+    openServerModal();
+    input.value = '';
+    return;
+  } else if (msg === '/차량' || msg === '/탑승') {
+    toggleVehicle();
+    input.value = '';
+    return;
   } else if (msg.startsWith('/') && socket && socket.connected) {
     socket.emit('chat', { message: msg });
   } else if (msg.startsWith('/')) {
@@ -361,7 +578,7 @@ function sendChat() {
       else if (data.openOutfitSelector) openOutfitSelector();
     }).catch(() => appendSystem('[오류] 명령어 전송 실패'));
   } else if (typeof firebaseDB !== 'undefined') {
-    firebaseDB.ref('chat_messages').push().set({
+    firebaseDB.ref(serverPath('chat_messages')).push().set({
       nickname: currentUser.nickname,
       rank: currentUser.rank,
       message: msg,
@@ -580,6 +797,7 @@ function buildCommandsHTML() {
       ['/mission','임무 목록','/mission'],['/training','훈련 현황','/training'],['/inventory','장비 목록','/inventory'],
       ['/schedule','일과표','/schedule'],['/notifications','알림','/notifications'],['/history','기록 조회','/history'],
       ['/접속자','접속자 목록','/접속자'],['/위치','위치 확인','/위치'],['/clear','채팅 정리','/clear'],
+      ['/텔레포트','건물 텔레포트','/tp'],['/서버','서버 선택','/서버'],['/차량','차량 탑승/하차','/차량'],['/복장','복장 변경','/복장'],
     ])}
     ${s('군 생활 신청',[
       ['/request equipment','장비 지급 요청','/request equipment'],['/request medical','진료 요청','/request medical'],
@@ -772,6 +990,7 @@ function initGameWorld() {
   createFences();
   createPlayer();
   initInventory();
+  createVehicles();
   loadBaseModel();
   loadPrisonModel();
 
@@ -1680,14 +1899,15 @@ function buildSoldierModel(rankIndex, isMainPlayer, outfitMode = 'rank') {
   const rc = getRankColor(rankIndex);
   const tier = getRankTier(rankIndex);
   const skinMat = new THREE.MeshPhongMaterial({ color: 0xf5c5a3, shininess: 20 });
-  const camoUniform = outfitMode === 'field' || outfitMode === 'tactical' ||
-    (outfitMode === 'rank' && (tier === 'soldier' || tier === 'nco'));
+  const isPrisoner = outfitMode === 'prisoner';
+  const camoUniform = !isPrisoner && (outfitMode === 'field' || outfitMode === 'tactical' ||
+    (outfitMode === 'rank' && (tier === 'soldier' || tier === 'nco')));
   const uniformMat = new THREE.MeshPhongMaterial({
-    color: camoUniform ? 0xffffff : (outfitMode === 'dress' && tier === 'general' ? 0x24301c : rc.uniform),
+    color: isPrisoner ? 0xe87020 : (camoUniform ? 0xffffff : (outfitMode === 'dress' && tier === 'general' ? 0x24301c : rc.uniform)),
     map: camoUniform ? createUniformTexture(rankIndex) : null,
-    shininess: 8
+    shininess: isPrisoner ? 3 : 8
   });
-  const bootMat = new THREE.MeshPhongMaterial({ color: 0x1a1a1a, shininess: 30 });
+  const bootMat = new THREE.MeshPhongMaterial({ color: isPrisoner ? 0x666666 : 0x1a1a1a, shininess: isPrisoner ? 5 : 30 });
   const beltMat = new THREE.MeshPhongMaterial({ color: tier === 'general' ? 0x4a3a1a : 0x2a2a1a, shininess: 15 });
   const helmetMat = new THREE.MeshPhongMaterial({ color: rc.helmet, shininess: 12 });
   const trimMat = new THREE.MeshPhongMaterial({
@@ -1868,7 +2088,11 @@ function buildSoldierModel(rankIndex, isMainPlayer, outfitMode = 'rank') {
   head.position.y = 2.2; head.castShadow = true; group.add(head);
 
   // Headgear (varies by rank)
-  if (tier === 'general' && outfitMode !== 'field' && outfitMode !== 'tactical') {
+  if (isPrisoner) {
+    // No helmet for prisoners - just hair
+    const hair = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.1, 0.42), new THREE.MeshPhongMaterial({ color: 0x222222 }));
+    hair.position.y = 2.43; group.add(hair);
+  } else if (tier === 'general' && outfitMode !== 'field' && outfitMode !== 'tactical') {
     // Officer peaked cap
     const capMat = new THREE.MeshPhongMaterial({ color: 0x1a2510, shininess: 20 });
     const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.3, 0.2, 12), capMat);
@@ -2693,12 +2917,44 @@ function animate() {
     const forward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
     const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
     let dx = 0, dz = 0;
-    if (moveForward) { dx += forward.x * playerSpeed; dz += forward.z * playerSpeed; }
-    if (moveBackward) { dx -= forward.x * playerSpeed; dz -= forward.z * playerSpeed; }
-    if (moveLeft) { dx -= right.x * playerSpeed; dz -= right.z * playerSpeed; }
-    if (moveRight) { dx += right.x * playerSpeed; dz += right.z * playerSpeed; }
+    const speed = currentVehicle ? currentVehicle.userData.speed : playerSpeed;
+    if (moveForward) { dx += forward.x * speed; dz += forward.z * speed; }
+    if (moveBackward) { dx -= forward.x * speed; dz -= forward.z * speed; }
+    if (moveLeft) { dx -= right.x * speed; dz -= right.z * speed; }
+    if (moveRight) { dx += right.x * speed; dz += right.z * speed; }
 
     const isMoving = dx !== 0 || dz !== 0;
+
+    if (currentVehicle) {
+      let vx = currentVehicle.position.x + dx;
+      let vz = currentVehicle.position.z + dz;
+      const boundary = 168;
+      vx = Math.max(-boundary, Math.min(boundary, vx));
+      vz = Math.max(-boundary, Math.min(boundary, vz));
+      currentVehicle.position.x = vx;
+      currentVehicle.position.z = vz;
+      if (isMoving) currentVehicle.rotation.y = yaw;
+      player.position.copy(currentVehicle.position);
+      player.rotation.y = yaw;
+
+      velocityY += gravity;
+      player.position.y += velocityY;
+      if (player.position.y <= 0) { player.position.y = 0; velocityY = 0; isJumping = false; }
+
+      const camDist = 7, camHeight = 4.5;
+      camera.position.x = player.position.x - Math.sin(yaw) * camDist;
+      camera.position.z = player.position.z - Math.cos(yaw) * camDist;
+      camera.position.y = player.position.y + camHeight + Math.sin(pitch) * 3;
+      camera.lookAt(player.position.x + Math.sin(yaw) * 3, player.position.y + 1.8 + pitch * 2, player.position.z + Math.cos(yaw) * 3);
+
+      updateLocationLabel();
+      posUpdateTimer++;
+      if (posUpdateTimer > 10) {
+        if (firebaseListenersActive) sendFirebasePosition();
+        posUpdateTimer = 0;
+      }
+    } else {
+
     let newX = player.position.x + dx;
     let newZ = player.position.z + dz;
 
@@ -2785,6 +3041,7 @@ function animate() {
       }
       posUpdateTimer = 0;
     }
+    } // end else (not in vehicle)
   }
   // Auto-fire for automatic weapons
   if (isFiring && isPointerLocked && WEAPONS[currentWeaponIndex].auto) {
