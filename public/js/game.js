@@ -84,6 +84,7 @@ async function register() {
 }
 
 async function logout() {
+  cleanupFirebase();
   await fetch('/api/auth/logout', { method: 'POST' });
   if (socket) socket.disconnect();
   currentUser = null;
@@ -120,56 +121,120 @@ function updateUserInfo() {
   else adminBtn.style.display = 'none';
 }
 
-// ==================== SOCKET ====================
-let usePolling = false;
-let pollInterval = null;
+// ==================== REALTIME (Firebase + Socket.IO fallback) ====================
+let firebaseListenersActive = false;
+let lastChatTimestamp = Date.now();
 
 function connectSocket() {
-  if (typeof io === 'undefined') {
-    usePolling = true;
-    startPolling();
+  // Always use Firebase for real-time multiplayer
+  if (typeof firebaseDB !== 'undefined') {
+    startFirebaseRealtime();
+    // Also try Socket.IO if available (for local dev server commands)
+    trySocketIO();
     return;
   }
+  // Fallback: Socket.IO only
+  trySocketIO();
+}
+
+function trySocketIO() {
+  if (typeof io === 'undefined' || window._noSocketIO) return;
   try {
-    socket = io({ transports: ['polling', 'websocket'], reconnectionAttempts: 5, timeout: 5000 });
-    socket.on('connect', () => { appendSystem('[연결] 서버에 접속했습니다.'); });
-    socket.on('connect_error', () => {
-      if (!usePolling) {
-        usePolling = true;
-        appendSystem('[연결] 실시간 연결 실패 - 폴링 모드로 전환합니다.');
-        startPolling();
-      }
-    });
-    socket.on('chat', (data) => appendChat(data));
+    socket = io({ transports: ['polling', 'websocket'], reconnectionAttempts: 3, timeout: 5000 });
+    socket.on('connect', () => { appendSystem('[연결] 서버 접속 완료'); });
     socket.on('system', (msg) => appendSystem(msg));
-    socket.on('onlineUsers', (users) => renderOnlineUsers(users));
-    socket.on('playerMoved', (data) => updateOtherPlayer(data));
-    socket.on('playerLeft', (data) => removeOtherPlayer(data.userId));
     socket.on('playerJailed', (data) => {
       if (data.userId === currentUser.id) showJailOverlay({ reason: '수감됨', releaseAt: data.releaseAt });
     });
     socket.on('playerReleased', (data) => {
       if (data.userId === currentUser.id) hideJailOverlay();
     });
-  } catch (e) {
-    usePolling = true;
-    startPolling();
-  }
+  } catch (e) {}
 }
 
-function startPolling() {
-  appendSystem('[시스템] 폴링 모드 - 채팅과 위치 업데이트가 지연될 수 있습니다.');
-  if (pollInterval) clearInterval(pollInterval);
-  pollInterval = setInterval(async () => {
-    try {
-      const resp = await fetch('/api/poll', { credentials: 'same-origin' });
-      if (resp.ok) {
-        const data = await resp.json();
-        if (data.messages) data.messages.forEach(m => appendChat(m));
-        if (data.online) renderOnlineUsers(data.online);
-      }
-    } catch (e) {}
-  }, 3000);
+function startFirebaseRealtime() {
+  if (firebaseListenersActive) return;
+  firebaseListenersActive = true;
+  const myId = currentUser.id;
+
+  // Register presence
+  const presenceRef = firebaseDB.ref('online/' + myId);
+  presenceRef.set({
+    nickname: currentUser.nickname,
+    rank: currentUser.rank,
+    rankIndex: currentUser.rankIndex,
+    lastSeen: firebase.database.ServerValue.TIMESTAMP
+  });
+  presenceRef.onDisconnect().remove();
+
+  // Listen for other players' positions
+  firebaseDB.ref('player_positions').on('value', (snap) => {
+    const positions = snap.val() || {};
+    const seenIds = new Set();
+    Object.entries(positions).forEach(([uid, data]) => {
+      if (uid === myId) return;
+      seenIds.add(uid);
+      updateOtherPlayer({
+        userId: uid,
+        nickname: data.nickname || uid,
+        rankIndex: data.rankIndex || 0,
+        x: data.x || 0,
+        y: data.y || 0,
+        z: data.z || 0
+      });
+    });
+    // Remove players no longer in the list
+    Object.keys(otherPlayers).forEach(uid => {
+      if (!seenIds.has(uid)) removeOtherPlayer(uid);
+    });
+  });
+
+  // Listen for online users
+  firebaseDB.ref('online').on('value', (snap) => {
+    const online = snap.val() || {};
+    const users = Object.entries(online).map(([id, u]) => ({
+      nickname: u.nickname || id,
+      userId: id
+    }));
+    renderOnlineUsers(users);
+  });
+
+  // Listen for new chat messages
+  firebaseDB.ref('chat_messages').orderByChild('sent_at').startAt(Date.now()).on('child_added', (snap) => {
+    const msg = snap.val();
+    if (!msg) return;
+    appendChat({
+      nickname: msg.nickname,
+      rank: msg.rank || '훈련병',
+      message: msg.message,
+      isAdmin: msg.isAdmin || false,
+      timestamp: msg.sent_at
+    });
+  });
+
+  appendSystem('[연결] 실시간 멀티플레이 연결 완료');
+}
+
+function sendFirebasePosition() {
+  if (!firebaseListenersActive || !player || !currentUser) return;
+  firebaseDB.ref('player_positions/' + currentUser.id).set({
+    nickname: currentUser.nickname,
+    rankIndex: currentUser.rankIndex || 0,
+    x: Math.round(player.position.x * 10) / 10,
+    y: Math.round(player.position.y * 10) / 10,
+    z: Math.round(player.position.z * 10) / 10,
+    timestamp: firebase.database.ServerValue.TIMESTAMP
+  });
+}
+
+function cleanupFirebase() {
+  if (!firebaseListenersActive || !currentUser) return;
+  firebaseDB.ref('online/' + currentUser.id).remove();
+  firebaseDB.ref('player_positions/' + currentUser.id).remove();
+  firebaseDB.ref('player_positions').off();
+  firebaseDB.ref('online').off();
+  firebaseDB.ref('chat_messages').off();
+  firebaseListenersActive = false;
 }
 
 // ==================== CHAT ====================
@@ -177,8 +242,24 @@ function sendChat() {
   const input = document.getElementById('chat-input');
   const msg = input.value.trim();
   if (!msg) return;
-  if (socket && socket.connected) {
+
+  if (msg.startsWith('/') && socket && socket.connected) {
     socket.emit('chat', { message: msg });
+  } else if (msg.startsWith('/')) {
+    fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ message: msg })
+    }).catch(() => appendSystem('[오류] 명령어 전송 실패'));
+  } else if (typeof firebaseDB !== 'undefined') {
+    firebaseDB.ref('chat_messages').push().set({
+      nickname: currentUser.nickname,
+      rank: currentUser.rank,
+      message: msg,
+      isAdmin: currentUser.isAdmin || false,
+      sent_at: firebase.database.ServerValue.TIMESTAMP
+    });
   } else {
     fetch('/api/chat', {
       method: 'POST',
@@ -2085,8 +2166,12 @@ function animate() {
     updateInteractionHint();
 
     posUpdateTimer++;
-    if (posUpdateTimer > 5 && socket) {
-      socket.emit('position', { x: player.position.x, y: player.position.y, z: player.position.z });
+    if (posUpdateTimer > 10) {
+      if (firebaseListenersActive) {
+        sendFirebasePosition();
+      } else if (socket && socket.connected) {
+        socket.emit('position', { x: player.position.x, y: player.position.y, z: player.position.z });
+      }
       posUpdateTimer = 0;
     }
   }
@@ -2250,3 +2335,4 @@ function drawCompass() {
 
 // ==================== INIT ====================
 document.addEventListener('DOMContentLoaded', () => { checkSession(); });
+window.addEventListener('beforeunload', () => { cleanupFirebase(); });
