@@ -686,6 +686,8 @@ const gravity = -0.01;
 const jumpForce = 0.2;
 const otherPlayers = {};
 let buildings = [];
+let insideBuilding = null;
+let buildingGroups = {};
 let minimapCtx;
 let compassCtx;
 let playerHeight = 1.7;
@@ -861,9 +863,12 @@ function createBuildings() {
     scene.add(group);
     buildings.push({
       name: loc.name, id: loc.id, type: loc.type,
-      minX: loc.x - loc.w / 2 - 1, maxX: loc.x + loc.w / 2 + 1,
-      minZ: loc.z - loc.d / 2 - 1, maxZ: loc.z + loc.d / 2 + 1,
-      height: loc.h, cx: loc.x, cz: loc.z, w: loc.w, d: loc.d
+      minX: loc.x - loc.w / 2, maxX: loc.x + loc.w / 2,
+      minZ: loc.z - loc.d / 2, maxZ: loc.z + loc.d / 2,
+      height: loc.h, cx: loc.x, cz: loc.z, w: loc.w, d: loc.d,
+      enterable: loc.h > 0.5 && loc.type !== 'admin_bunker' && loc.type !== 'prison',
+      doorMinX: loc.x - 1.2, doorMaxX: loc.x + 1.2,
+      doorZ: loc.z + loc.d / 2
     });
   });
 }
@@ -924,11 +929,49 @@ function buildBunkerEntrance(group, loc) {
 
 function buildStructure(group, loc) {
   const wallColor = new THREE.Color(loc.color);
+  const wallThick = 0.3;
   const wallMat = new THREE.MeshPhongMaterial({ color: loc.color, shininess: 10 });
-  const wall = new THREE.Mesh(new THREE.BoxGeometry(loc.w, loc.h, loc.d), wallMat);
-  wall.position.y = loc.h / 2;
-  wall.castShadow = true; wall.receiveShadow = true;
-  group.add(wall);
+  const wallMatInner = new THREE.MeshPhongMaterial({ color: 0xd8d0c0, shininess: 5 });
+  const doorWidth = 2.4;
+  const doorHeight = 3.0;
+
+  const exteriorGroup = new THREE.Group();
+  exteriorGroup.name = 'exterior';
+
+  // Front wall (with door hole) - two segments on each side of door
+  const frontLeftW = (loc.w - doorWidth) / 2;
+  const frontLeftWall = new THREE.Mesh(new THREE.BoxGeometry(frontLeftW, loc.h, wallThick), wallMat);
+  frontLeftWall.position.set(-loc.w / 2 + frontLeftW / 2, loc.h / 2, loc.d / 2);
+  frontLeftWall.castShadow = true;
+  exteriorGroup.add(frontLeftWall);
+  const frontRightWall = new THREE.Mesh(new THREE.BoxGeometry(frontLeftW, loc.h, wallThick), wallMat);
+  frontRightWall.position.set(loc.w / 2 - frontLeftW / 2, loc.h / 2, loc.d / 2);
+  frontRightWall.castShadow = true;
+  exteriorGroup.add(frontRightWall);
+  // Above door
+  const aboveDoor = new THREE.Mesh(new THREE.BoxGeometry(doorWidth, loc.h - doorHeight, wallThick), wallMat);
+  aboveDoor.position.set(0, doorHeight + (loc.h - doorHeight) / 2, loc.d / 2);
+  exteriorGroup.add(aboveDoor);
+
+  // Back wall (solid)
+  const backWall = new THREE.Mesh(new THREE.BoxGeometry(loc.w, loc.h, wallThick), wallMat);
+  backWall.position.set(0, loc.h / 2, -loc.d / 2);
+  backWall.castShadow = true;
+  exteriorGroup.add(backWall);
+
+  // Left wall
+  const leftWall = new THREE.Mesh(new THREE.BoxGeometry(wallThick, loc.h, loc.d), wallMat);
+  leftWall.position.set(-loc.w / 2, loc.h / 2, 0);
+  leftWall.castShadow = true;
+  exteriorGroup.add(leftWall);
+
+  // Right wall
+  const rightWall = new THREE.Mesh(new THREE.BoxGeometry(wallThick, loc.h, loc.d), wallMat);
+  rightWall.position.set(loc.w / 2, loc.h / 2, 0);
+  rightWall.castShadow = true;
+  exteriorGroup.add(rightWall);
+
+  group.add(exteriorGroup);
 
   // Base
   const baseMat = new THREE.MeshPhongMaterial({ color: wallColor.clone().multiplyScalar(0.6) });
@@ -936,13 +979,63 @@ function buildStructure(group, loc) {
   base.position.y = 0.3; base.receiveShadow = true;
   group.add(base);
 
-  // Top trim
-  const trimMat = new THREE.MeshPhongMaterial({ color: wallColor.clone().multiplyScalar(0.7) });
-  const topTrim = new THREE.Mesh(new THREE.BoxGeometry(loc.w + 0.2, 0.3, loc.d + 0.2), trimMat);
-  topTrim.position.y = loc.h;
-  group.add(topTrim);
+  // Floor (interior)
+  const floorMat = new THREE.MeshPhongMaterial({ color: 0x8a8070, shininess: 20 });
+  const floor = new THREE.Mesh(new THREE.BoxGeometry(loc.w - wallThick * 2, 0.1, loc.d - wallThick * 2), floorMat);
+  floor.position.y = 0.05; floor.receiveShadow = true;
+  group.add(floor);
 
-  // Windows
+  // Ceiling
+  const ceilingMat = new THREE.MeshPhongMaterial({ color: 0xcccccc, side: THREE.DoubleSide });
+  const ceiling = new THREE.Mesh(new THREE.PlaneGeometry(loc.w - wallThick * 2, loc.d - wallThick * 2), ceilingMat);
+  ceiling.rotation.x = Math.PI / 2;
+  ceiling.position.y = loc.h - 0.05;
+  group.add(ceiling);
+
+  // Inner walls (cream color, visible from inside)
+  const innerFrontL = new THREE.Mesh(new THREE.BoxGeometry(frontLeftW, loc.h, 0.05), wallMatInner);
+  innerFrontL.position.set(-loc.w / 2 + frontLeftW / 2, loc.h / 2, loc.d / 2 - wallThick / 2);
+  group.add(innerFrontL);
+  const innerFrontR = new THREE.Mesh(new THREE.BoxGeometry(frontLeftW, loc.h, 0.05), wallMatInner);
+  innerFrontR.position.set(loc.w / 2 - frontLeftW / 2, loc.h / 2, loc.d / 2 - wallThick / 2);
+  group.add(innerFrontR);
+  const innerBack = new THREE.Mesh(new THREE.PlaneGeometry(loc.w, loc.h), wallMatInner);
+  innerBack.position.set(0, loc.h / 2, -loc.d / 2 + wallThick / 2);
+  group.add(innerBack);
+  const innerLeft = new THREE.Mesh(new THREE.PlaneGeometry(loc.d, loc.h), wallMatInner);
+  innerLeft.rotation.y = Math.PI / 2;
+  innerLeft.position.set(-loc.w / 2 + wallThick / 2, loc.h / 2, 0);
+  group.add(innerLeft);
+  const innerRight = new THREE.Mesh(new THREE.PlaneGeometry(loc.d, loc.h), wallMatInner);
+  innerRight.rotation.y = -Math.PI / 2;
+  innerRight.position.set(loc.w / 2 - wallThick / 2, loc.h / 2, 0);
+  group.add(innerRight);
+
+  // Interior lighting
+  const interiorLight = new THREE.PointLight(0xffe8c0, 0.8, loc.w * 1.5);
+  interiorLight.position.set(0, loc.h - 0.5, 0);
+  group.add(interiorLight);
+  // Light fixture mesh
+  const fixtureMat = new THREE.MeshPhongMaterial({ color: 0xffffff, emissive: 0xffe8c0, emissiveIntensity: 0.5 });
+  const fixture = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.08, 0.4), fixtureMat);
+  fixture.position.set(0, loc.h - 0.15, 0);
+  group.add(fixture);
+  if (loc.w > 14) {
+    const light2 = new THREE.PointLight(0xffe8c0, 0.5, loc.w);
+    light2.position.set(-loc.w / 4, loc.h - 0.5, 0);
+    group.add(light2);
+    const fix2 = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.08, 0.4), fixtureMat);
+    fix2.position.set(-loc.w / 4, loc.h - 0.15, 0);
+    group.add(fix2);
+    const light3 = new THREE.PointLight(0xffe8c0, 0.5, loc.w);
+    light3.position.set(loc.w / 4, loc.h - 0.5, 0);
+    group.add(light3);
+    const fix3 = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.08, 0.4), fixtureMat);
+    fix3.position.set(loc.w / 4, loc.h - 0.15, 0);
+    group.add(fix3);
+  }
+
+  // Windows (exterior only)
   const winMat = new THREE.MeshPhongMaterial({ color: 0xa0c8e8, emissive: 0x203040, shininess: 80, transparent: true, opacity: 0.85 });
   const winFrameMat = new THREE.MeshPhongMaterial({ color: 0x3a3a3a });
   const winW = 1.4, winH = 1.6;
@@ -954,14 +1047,14 @@ function buildStructure(group, loc) {
     const spacing = loc.w / (cols + 1);
     for (let c = 0; c < cols; c++) {
       const wx = -loc.w / 2 + spacing * (c + 1);
-      [loc.d / 2 + 0.06, -loc.d / 2 - 0.06].forEach((wz, i) => {
+      [loc.d / 2 + 0.16, -loc.d / 2 - 0.16].forEach((wz, i) => {
         const win = new THREE.Mesh(new THREE.PlaneGeometry(winW, winH), winMat);
         win.position.set(wx, wy, wz);
         if (i === 1) win.rotation.y = Math.PI;
-        group.add(win);
+        exteriorGroup.add(win);
         const fr = new THREE.Mesh(new THREE.BoxGeometry(winW + 0.2, winH + 0.2, 0.08), winFrameMat);
         fr.position.set(wx, wy, wz - 0.02 * (i === 0 ? 1 : -1));
-        group.add(fr);
+        exteriorGroup.add(fr);
       });
     }
   }
@@ -969,19 +1062,17 @@ function buildStructure(group, loc) {
   // Roof
   const roofMat = new THREE.MeshPhongMaterial({ color: 0x3a2a1a, shininess: 5 });
   if (loc.type === 'hq') {
-    // Flat roof with flag
     const flatRoof = new THREE.Mesh(new THREE.BoxGeometry(loc.w + 1.6, 0.4, loc.d + 1.6), roofMat);
     flatRoof.position.y = loc.h + 0.2; flatRoof.castShadow = true;
-    group.add(flatRoof);
+    exteriorGroup.add(flatRoof);
     const edgeMat = new THREE.MeshPhongMaterial({ color: 0x4a3a2a });
     const edgeGeo = new THREE.BoxGeometry(loc.w + 1.8, 0.5, 0.3);
     [-(loc.d / 2 + 0.8), loc.d / 2 + 0.8].forEach(z => {
-      const e = new THREE.Mesh(edgeGeo, edgeMat); e.position.set(0, loc.h + 0.55, z); group.add(e);
+      const e = new THREE.Mesh(edgeGeo, edgeMat); e.position.set(0, loc.h + 0.55, z); exteriorGroup.add(e);
     });
-    // Flag
     const flagPole = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 6, 8), new THREE.MeshPhongMaterial({ color: 0x888888, shininess: 60 }));
     flagPole.position.set(0, loc.h + 3.3, 0);
-    group.add(flagPole);
+    exteriorGroup.add(flagPole);
     const flagCanvas = document.createElement('canvas');
     flagCanvas.width = 128; flagCanvas.height = 84;
     const fctx = flagCanvas.getContext('2d');
@@ -990,41 +1081,31 @@ function buildStructure(group, loc) {
     fctx.fillStyle = '#003478'; fctx.beginPath(); fctx.arc(64, 42, 24, Math.PI, Math.PI * 2, false); fctx.fill();
     const flagMesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 1.3), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(flagCanvas), side: THREE.DoubleSide }));
     flagMesh.position.set(1.1, loc.h + 5.8, 0);
-    group.add(flagMesh);
+    exteriorGroup.add(flagMesh);
   } else {
     const roof = new THREE.Mesh(new THREE.BoxGeometry(loc.w + 1, 0.4, loc.d + 1), roofMat);
     roof.position.y = loc.h + 0.2; roof.castShadow = true;
-    group.add(roof);
+    exteriorGroup.add(roof);
   }
 
-  // Door
+  // Door frame and steps (always visible)
   const doorFrameMat = new THREE.MeshPhongMaterial({ color: 0x2a1a0a });
   const doorMat = new THREE.MeshPhongMaterial({ color: 0x6B3513 });
-  const doorFrame = new THREE.Mesh(new THREE.BoxGeometry(2.2, 3.2, 0.15), doorFrameMat);
-  doorFrame.position.set(0, 1.6, loc.d / 2 + 0.08);
+  const doorFrame = new THREE.Mesh(new THREE.BoxGeometry(doorWidth + 0.4, doorHeight + 0.2, wallThick + 0.1), doorFrameMat);
+  doorFrame.position.set(0, doorHeight / 2 + 0.1, loc.d / 2);
   group.add(doorFrame);
-  [-0.5, 0.5].forEach(dx => {
-    const door = new THREE.Mesh(new THREE.BoxGeometry(0.9, 2.8, 0.12), doorMat);
-    door.position.set(dx, 1.6, loc.d / 2 + 0.14);
-    group.add(door);
-  });
-  const handleMat = new THREE.MeshPhongMaterial({ color: 0xc0a030, shininess: 80 });
-  [-0.15, 0.15].forEach(dx => {
-    const h = new THREE.Mesh(new THREE.SphereGeometry(0.08, 8, 8), handleMat);
-    h.position.set(dx, 1.5, loc.d / 2 + 0.22);
-    group.add(h);
-  });
 
-  // Steps
   const stepMat = new THREE.MeshPhongMaterial({ color: 0x777777 });
   const step1 = new THREE.Mesh(new THREE.BoxGeometry(3, 0.2, 1), stepMat);
   step1.position.set(0, 0.1, loc.d / 2 + 0.8); step1.receiveShadow = true;
   group.add(step1);
 
-  // Awning
   const awning = new THREE.Mesh(new THREE.BoxGeometry(3.5, 0.12, 1.5), new THREE.MeshPhongMaterial({ color: 0x4a5c3e }));
   awning.position.set(0, 3.3, loc.d / 2 + 0.75); awning.castShadow = true;
   group.add(awning);
+
+  // Interior furniture
+  addInteriorFurniture(group, loc);
 
   // Building-specific details
   addBuildingDetails(group, loc);
@@ -1033,14 +1114,255 @@ function buildStructure(group, loc) {
   const signCanvas = createTextCanvas(loc.name, 256, 64);
   const signTex = new THREE.CanvasTexture(signCanvas);
   const signGeo = new THREE.PlaneGeometry(5, 1.2);
-  const signMat = new THREE.MeshBasicMaterial({ map: signTex, transparent: true });
-  const sign = new THREE.Mesh(signGeo, signMat);
+  const signMat2 = new THREE.MeshBasicMaterial({ map: signTex, transparent: true });
+  const sign = new THREE.Mesh(signGeo, signMat2);
   sign.position.set(0, loc.h + 2, loc.d / 2 + 0.2);
-  group.add(sign);
-  const signBack = new THREE.Mesh(signGeo, signMat);
+  exteriorGroup.add(sign);
+  const signBack = new THREE.Mesh(signGeo, signMat2);
   signBack.position.set(0, loc.h + 2, -loc.d / 2 - 0.2);
   signBack.rotation.y = Math.PI;
-  group.add(signBack);
+  exteriorGroup.add(signBack);
+
+  buildingGroups[loc.id] = { exterior: exteriorGroup, group: group };
+}
+
+function addInteriorFurniture(group, loc) {
+  const deskMat = new THREE.MeshPhongMaterial({ color: 0x8B6914, shininess: 30 });
+  const chairMat = new THREE.MeshPhongMaterial({ color: 0x2a2a2a });
+  const metalMat = new THREE.MeshPhongMaterial({ color: 0x888888, shininess: 60 });
+  const iw = loc.w / 2 - 1;
+  const id = loc.d / 2 - 1;
+
+  switch (loc.type) {
+    case 'hq': case 'admin_office': case 'briefing': case 'situation':
+    case 'commander': case 'personnel': case 'officer_room': case 'comm': {
+      // Desks in rows
+      const rows = Math.max(1, Math.floor(loc.d / 5));
+      const cols = Math.max(1, Math.floor(loc.w / 5));
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          const dx = -iw + 1.5 + c * (loc.w - 3) / Math.max(1, cols - 1 || 1);
+          const dz = -id + 1 + r * (loc.d - 4) / Math.max(1, rows);
+          // Desk
+          const desk = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.08, 1.0), deskMat);
+          desk.position.set(dx, 0.75, dz);
+          group.add(desk);
+          // Desk legs
+          [[-0.8, -0.4], [0.8, -0.4], [-0.8, 0.4], [0.8, 0.4]].forEach(([lx, lz]) => {
+            const leg = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.75, 0.06), metalMat);
+            leg.position.set(dx + lx, 0.375, dz + lz);
+            group.add(leg);
+          });
+          // Chair
+          const seat = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.06, 0.5), chairMat);
+          seat.position.set(dx, 0.45, dz + 0.8);
+          group.add(seat);
+          const back = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.5, 0.06), chairMat);
+          back.position.set(dx, 0.7, dz + 1.05);
+          group.add(back);
+          // Monitor on desk
+          const screen = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.4, 0.04), new THREE.MeshPhongMaterial({ color: 0x111111, emissive: 0x1a3a5a, emissiveIntensity: 0.3 }));
+          screen.position.set(dx, 1.0, dz - 0.2);
+          group.add(screen);
+        }
+      }
+      // Whiteboard on back wall
+      const wb = new THREE.Mesh(new THREE.PlaneGeometry(Math.min(loc.w - 2, 4), 1.5), new THREE.MeshPhongMaterial({ color: 0xf0f0f0 }));
+      wb.position.set(0, 2.5, -id + 0.2);
+      group.add(wb);
+      break;
+    }
+    case 'barracks': {
+      // Bunk beds
+      const bedMat = new THREE.MeshPhongMaterial({ color: 0x3a5030 });
+      const frameMat = new THREE.MeshPhongMaterial({ color: 0x666666 });
+      const bunks = Math.max(2, Math.floor(loc.w / 4));
+      for (let i = 0; i < bunks; i++) {
+        const bx = -iw + 1.5 + i * (loc.w - 3) / (bunks);
+        [-1, 1].forEach(side => {
+          const bz = side * (id - 1.2);
+          // Frame
+          const frame = new THREE.Mesh(new THREE.BoxGeometry(1.6, 2.4, 0.06), frameMat);
+          frame.position.set(bx, 1.2, bz);
+          group.add(frame);
+          // Bottom bed
+          const bed1 = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.12, 2.0), bedMat);
+          bed1.position.set(bx, 0.5, bz - side * 0.5);
+          group.add(bed1);
+          // Top bed
+          const bed2 = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.12, 2.0), bedMat);
+          bed2.position.set(bx, 1.8, bz - side * 0.5);
+          group.add(bed2);
+          // Pillow
+          const pillowMat = new THREE.MeshPhongMaterial({ color: 0xeeeeee });
+          const p1 = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.1, 0.3), pillowMat);
+          p1.position.set(bx, 0.62, bz);
+          group.add(p1);
+        });
+      }
+      // Lockers along back wall
+      const lockerMat = new THREE.MeshPhongMaterial({ color: 0x4a6040 });
+      for (let i = 0; i < Math.floor(loc.w / 1.5); i++) {
+        const lk = new THREE.Mesh(new THREE.BoxGeometry(0.6, 1.8, 0.5), lockerMat);
+        lk.position.set(-iw + 0.5 + i * 1.2, 0.9, -id + 0.4);
+        group.add(lk);
+      }
+      break;
+    }
+    case 'mess_hall': {
+      // Long tables with benches
+      const tableMat = new THREE.MeshPhongMaterial({ color: 0xb0a080 });
+      const benchMat = new THREE.MeshPhongMaterial({ color: 0x8a6a3a });
+      const tables = Math.max(2, Math.floor(loc.d / 4));
+      for (let t = 0; t < tables; t++) {
+        const tz = -id + 2 + t * (loc.d - 4) / tables;
+        const table = new THREE.Mesh(new THREE.BoxGeometry(loc.w - 4, 0.08, 1.0), tableMat);
+        table.position.set(0, 0.75, tz);
+        group.add(table);
+        [[-0.7], [0.7]].forEach(([bz]) => {
+          const bench = new THREE.Mesh(new THREE.BoxGeometry(loc.w - 4, 0.06, 0.3), benchMat);
+          bench.position.set(0, 0.4, tz + bz);
+          group.add(bench);
+        });
+      }
+      // Serving counter at back
+      const counter = new THREE.Mesh(new THREE.BoxGeometry(loc.w - 2, 1.0, 0.8), metalMat);
+      counter.position.set(0, 0.5, -id + 0.8);
+      group.add(counter);
+      break;
+    }
+    case 'medical': {
+      // Medical beds
+      const bedMat = new THREE.MeshPhongMaterial({ color: 0xffffff });
+      for (let i = 0; i < 3; i++) {
+        const bx = -iw + 2 + i * 4;
+        if (bx > iw - 1) break;
+        const bed = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.5, 2.2), bedMat);
+        bed.position.set(bx, 0.25, id - 1.5);
+        group.add(bed);
+        // IV stand
+        const iv = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 1.8, 6), metalMat);
+        iv.position.set(bx + 0.9, 1.4, id - 1.5);
+        group.add(iv);
+      }
+      // Medicine cabinet
+      const cab = new THREE.Mesh(new THREE.BoxGeometry(2, 1.5, 0.4), new THREE.MeshPhongMaterial({ color: 0xeeeeee }));
+      cab.position.set(0, 1.5, -id + 0.4);
+      group.add(cab);
+      break;
+    }
+    case 'equipment': case 'supply': {
+      // Shelving racks
+      const shelfMat = new THREE.MeshPhongMaterial({ color: 0x606060 });
+      for (let r = 0; r < 3; r++) {
+        const rz = -id + 1.5 + r * 3;
+        if (rz > id - 1) break;
+        const shelf = new THREE.Mesh(new THREE.BoxGeometry(loc.w - 3, 2.5, 0.8), shelfMat);
+        shelf.position.set(0, 1.25, rz);
+        group.add(shelf);
+        // Shelves inside
+        for (let s = 0; s < 3; s++) {
+          const sh = new THREE.Mesh(new THREE.BoxGeometry(loc.w - 3.2, 0.06, 0.7), metalMat);
+          sh.position.set(0, 0.5 + s * 0.8, rz);
+          group.add(sh);
+        }
+      }
+      break;
+    }
+    case 'education': case 'training': {
+      // Classroom desks facing front
+      const rows2 = Math.max(2, Math.floor(loc.d / 3));
+      const cols2 = Math.max(2, Math.floor(loc.w / 3));
+      for (let r = 0; r < rows2; r++) {
+        for (let c = 0; c < cols2; c++) {
+          const dx = -iw + 1.5 + c * (loc.w - 3) / cols2;
+          const dz = -id + 3 + r * 2.5;
+          if (dz > id - 1) continue;
+          const desk2 = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.06, 0.6), deskMat);
+          desk2.position.set(dx, 0.7, dz);
+          group.add(desk2);
+        }
+      }
+      // Podium
+      const podium = new THREE.Mesh(new THREE.BoxGeometry(1.5, 1.0, 0.8), deskMat);
+      podium.position.set(0, 0.5, -id + 1);
+      group.add(podium);
+      // Chalkboard
+      const cb = new THREE.Mesh(new THREE.PlaneGeometry(Math.min(loc.w - 2, 5), 2), new THREE.MeshPhongMaterial({ color: 0x2a4a2a }));
+      cb.position.set(0, 2.5, -id + 0.2);
+      group.add(cb);
+      break;
+    }
+    case 'garage': {
+      // Vehicle shapes
+      const vehicleMat = new THREE.MeshPhongMaterial({ color: 0x4a5a3a });
+      for (let i = 0; i < 2; i++) {
+        const vx = -iw + 3 + i * 8;
+        if (vx > iw - 2) break;
+        // Body
+        const body = new THREE.Mesh(new THREE.BoxGeometry(3, 1.5, 5), vehicleMat);
+        body.position.set(vx, 0.75, 0);
+        group.add(body);
+        // Wheels
+        const wheelMat = new THREE.MeshPhongMaterial({ color: 0x222222 });
+        [[-1.2, -2], [-1.2, 2], [1.2, -2], [1.2, 2]].forEach(([wx, wz]) => {
+          const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.4, 0.3, 8), wheelMat);
+          wheel.rotation.z = Math.PI / 2;
+          wheel.position.set(vx + wx, 0.4, wz);
+          group.add(wheel);
+        });
+      }
+      break;
+    }
+    case 'lounge': {
+      // Couches and tables
+      const couchMat = new THREE.MeshPhongMaterial({ color: 0x5a4030 });
+      // Couch L
+      const couch1 = new THREE.Mesh(new THREE.BoxGeometry(3, 0.8, 1.0), couchMat);
+      couch1.position.set(-iw + 2, 0.4, id - 1);
+      group.add(couch1);
+      const couch1b = new THREE.Mesh(new THREE.BoxGeometry(3, 0.5, 0.15), couchMat);
+      couch1b.position.set(-iw + 2, 0.9, id - 0.55);
+      group.add(couch1b);
+      // Couch R
+      const couch2 = new THREE.Mesh(new THREE.BoxGeometry(3, 0.8, 1.0), couchMat);
+      couch2.position.set(iw - 2, 0.4, id - 1);
+      group.add(couch2);
+      // Coffee table
+      const ct = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.4, 0.8), deskMat);
+      ct.position.set(0, 0.2, id - 1);
+      group.add(ct);
+      // Vending machine
+      const vm = new THREE.Mesh(new THREE.BoxGeometry(0.8, 1.8, 0.6), new THREE.MeshPhongMaterial({ color: 0x2244aa }));
+      vm.position.set(iw - 0.6, 0.9, -id + 0.6);
+      group.add(vm);
+      break;
+    }
+    case 'archive': {
+      // Filing cabinets
+      const cabinetMat = new THREE.MeshPhongMaterial({ color: 0x707070 });
+      for (let i = 0; i < Math.floor(loc.w / 1.5); i++) {
+        const cab2 = new THREE.Mesh(new THREE.BoxGeometry(0.8, 1.5, 0.5), cabinetMat);
+        cab2.position.set(-iw + 0.6 + i * 1.3, 0.75, -id + 0.5);
+        group.add(cab2);
+      }
+      // Reading desk
+      const rd = new THREE.Mesh(new THREE.BoxGeometry(2.5, 0.08, 1.2), deskMat);
+      rd.position.set(0, 0.75, 1);
+      group.add(rd);
+      break;
+    }
+    default: {
+      // Generic: a desk and a chair
+      const gd = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.08, 1.0), deskMat);
+      gd.position.set(0, 0.75, -id + 1.5);
+      group.add(gd);
+      const gs = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.06, 0.5), chairMat);
+      gs.position.set(0, 0.45, -id + 2.5);
+      group.add(gs);
+      break;
+    }
+  }
 }
 
 function addBuildingDetails(group, loc) {
@@ -2385,11 +2707,46 @@ function animate() {
     newZ = Math.max(-boundary, Math.min(boundary, newZ));
 
     let blocked = false;
+    const wallT = 0.3;
+    const playerR = 0.3;
     for (const b of buildings) {
       if (b.height < 1) continue;
-      if (newX > b.minX && newX < b.maxX && newZ > b.minZ && newZ < b.maxZ) { blocked = true; break; }
+      if (b.enterable) {
+        const insideX = newX > b.minX + wallT + playerR && newX < b.maxX - wallT - playerR;
+        const insideZ = newZ > b.minZ + wallT + playerR && newZ < b.maxZ - wallT - playerR;
+        const nearDoor = newX > b.doorMinX && newX < b.doorMaxX && Math.abs(newZ - b.doorZ) < 1.5;
+        if (insideX && insideZ) continue;
+        if (nearDoor) continue;
+        // Wall collision
+        if (newX > b.minX - playerR && newX < b.maxX + playerR && newZ > b.minZ - playerR && newZ < b.maxZ + playerR) {
+          blocked = true; break;
+        }
+      } else {
+        if (newX > b.minX - playerR && newX < b.maxX + playerR && newZ > b.minZ - playerR && newZ < b.maxZ + playerR) {
+          blocked = true; break;
+        }
+      }
     }
     if (!blocked) { player.position.x = newX; player.position.z = newZ; }
+
+    // Check if player is inside a building
+    let nowInside = null;
+    for (const b of buildings) {
+      if (!b.enterable) continue;
+      if (player.position.x > b.minX + wallT && player.position.x < b.maxX - wallT &&
+          player.position.z > b.minZ + wallT && player.position.z < b.maxZ - wallT) {
+        nowInside = b; break;
+      }
+    }
+    if (nowInside !== insideBuilding) {
+      if (insideBuilding && buildingGroups[insideBuilding.id]) {
+        buildingGroups[insideBuilding.id].exterior.visible = true;
+      }
+      insideBuilding = nowInside;
+      if (insideBuilding && buildingGroups[insideBuilding.id]) {
+        buildingGroups[insideBuilding.id].exterior.visible = false;
+      }
+    }
 
     velocityY += gravity;
     player.position.y += velocityY;
