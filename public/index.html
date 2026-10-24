@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>대한민국 육군</title>
+  <link rel="icon" type="image/webp" href="/favicon.webp">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;600;700;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <!-- 로그인/회원가입 -->
+  <div id="auth-screen">
+    <div class="auth-bg"></div>
+    <div class="auth-container">
+      <div class="auth-logo">
+        <div class="auth-star">★</div>
+        <h1>대한민국 육군</h1>
+        <p class="subtitle">REPUBLIC OF KOREA ARMY</p>
+      </div>
+      <div class="auth-tabs">
+        <button class="auth-tab active" onclick="showLogin()">로그인</button>
+        <button class="auth-tab" onclick="showRegister()">회원가입</button>
+      </div>
+      <div id="login-form" class="auth-form">
+        <div class="input-group">
+          <span class="input-icon">👤</span>
+          <input type="text" id="login-username" placeholder="아이디" maxlength="20" autocomplete="username">
+        </div>
+        <div class="input-group">
+          <span class="input-icon">🔒</span>
+          <input type="password" id="login-password" placeholder="비밀번호" maxlength="50" autocomplete="current-password">
+        </div>
+        <div class="auth-error" id="login-error"></div>
+        <button class="btn-primary" onclick="login()">접속하기</button>
+      </div>
+      <div id="register-form" class="auth-form" style="display:none">
+        <div class="input-group"><span class="input-icon">👤</span><input type="text" id="reg-username" placeholder="아이디 (영문, 숫자 3~20자)" maxlength="20"></div>
+        <div class="input-group"><span class="input-icon">🔒</span><input type="password" id="reg-password" placeholder="비밀번호 (4~50자)" maxlength="50"></div>
+        <div class="input-group"><span class="input-icon">🏷️</span><input type="text" id="reg-nickname" placeholder="닉네임 (2~10자)" maxlength="10"></div>
+        <div class="auth-error" id="register-error"></div>
+        <button class="btn-primary" onclick="register()">입대하기</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 게임 화면 -->
+  <div id="game-screen" style="display:none">
+    <!-- 3D 전체화면 -->
+    <div id="game-canvas"></div>
+
+    <!-- 상단 컴패스 바 -->
+    <div id="compass-bar">
+      <canvas id="compass-canvas" width="400" height="32"></canvas>
+    </div>
+
+    <!-- 좌상단: 원형 미니맵 -->
+    <div id="minimap-wrap">
+      <canvas id="minimap-canvas" width="200" height="200"></canvas>
+      <div class="compass-n">N</div>
+      <div class="compass-s">S</div>
+      <div class="compass-e">E</div>
+      <div class="compass-w">W</div>
+    </div>
+
+    <!-- 좌측: 퀘스트/위치 패널 -->
+    <div id="quest-panel">
+      <div class="quest-header">현재 위치</div>
+      <div class="quest-title" id="location-label">사령부</div>
+      <div class="quest-desc" id="quest-desc"></div>
+    </div>
+
+    <!-- 우상단: 유저 정보 + 버튼 -->
+    <div id="hud-top-right">
+      <div id="user-card">
+        <div id="user-info"></div>
+        <div class="hud-buttons">
+          <button id="btn-exam" onclick="openExamModal()">내 정보</button>
+          <button id="btn-admin" onclick="openAdminPanel()" style="display:none">관리</button>
+          <button id="btn-logout" onclick="logout()">나가기</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 우측: 액션 버튼 -->
+    <div id="action-buttons">
+      <button class="action-btn" id="btn-action-aim" title="조준">◎</button>
+      <button class="action-btn" id="btn-action-interact" title="상호작용">E</button>
+      <button class="action-btn" id="btn-action-inventory" title="인벤토리">▦</button>
+    </div>
+
+    <!-- 크로스헤어 -->
+    <div id="crosshair">
+      <div class="ch-line ch-top"></div>
+      <div class="ch-line ch-bottom"></div>
+      <div class="ch-line ch-left"></div>
+      <div class="ch-line ch-right"></div>
+      <div class="ch-dot"></div>
+    </div>
+
+    <!-- 하단 중앙: HP 바 + 무기 -->
+    <div id="hud-bottom-center">
+      <div id="hp-bar-wrap">
+        <span class="hp-label">HP</span>
+        <span class="hp-value" id="hp-value">100</span>
+        <div class="hp-bar-bg">
+          <div class="hp-bar-fill" id="hp-bar-fill"></div>
+        </div>
+      </div>
+      <div id="weapon-hud">
+        <div class="weapon-slots">
+          <div class="weapon-slot active" id="weapon-slot-0" onclick="switchWeapon(0)">
+            <div class="slot-key">1</div>
+            <div class="slot-icon" id="slot-icon-0">🔫</div>
+            <div class="slot-name" id="slot-name-0">K2</div>
+          </div>
+          <div class="weapon-slot" id="weapon-slot-1" onclick="switchWeapon(1)">
+            <div class="slot-key">2</div>
+            <div class="slot-icon" id="slot-icon-1">🔫</div>
+            <div class="slot-name" id="slot-name-1">K5</div>
+          </div>
+          <div class="weapon-slot" id="weapon-slot-2" onclick="switchWeapon(2)">
+            <div class="slot-key">3</div>
+            <div class="slot-icon" id="slot-icon-2">🔪</div>
+            <div class="slot-name" id="slot-name-2">군도</div>
+          </div>
+        </div>
+        <div class="ammo-display">
+          <span class="ammo-current" id="ammo-current">30</span>
+          <span class="ammo-sep">/</span>
+          <span class="ammo-reserve" id="ammo-reserve">120</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 하단 우측: 접속자 -->
+    <div id="online-panel">
+      <div class="panel-header" onclick="toggleOnline()">접속자 <span id="online-count">0</span></div>
+      <div id="online-users"></div>
+    </div>
+
+    <!-- 하단 채팅 -->
+    <div id="chat-panel">
+      <div id="chat-messages"></div>
+      <div id="chat-input-area">
+        <input type="text" id="chat-input" placeholder="채팅 입력... (/도움말)" maxlength="500">
+        <button id="chat-send" onclick="sendChat()">⏎</button>
+      </div>
+    </div>
+
+    <!-- 상호작용 힌트 -->
+    <div id="interaction-hint"></div>
+
+    <!-- 머즐 플래시 -->
+    <div id="muzzle-flash"></div>
+    <!-- 재장전 표시 -->
+    <div id="reload-indicator">재장전 중...</div>
+
+    <!-- 영창 오버레이 -->
+    <div id="jail-overlay"></div>
+    <div id="jail-info">⛓️ 영창 수감 중 · <span id="jail-timer"></span> · 사유: <span id="jail-reason"></span></div>
+  </div>
+
+  <!-- 계급 정보 모달 -->
+  <div id="exam-modal" class="modal-overlay">
+    <div class="modal">
+      <button class="close-btn" onclick="closeExamModal()">&times;</button>
+      <h2 id="exam-title">내 계급 정보</h2>
+      <div id="exam-info"></div>
+      <div id="exam-result" style="display:none"></div>
+    </div>
+  </div>
+
+  <!-- 관리자 모달 -->
+  <div id="admin-modal" class="modal-overlay">
+    <div class="modal modal-lg">
+      <button class="close-btn" onclick="closeAdminPanel()">&times;</button>
+      <h2>관리자 패널</h2>
+      <div class="admin-tabs">
+        <button class="admin-tab active" onclick="adminTab('users')">유저 관리</button>
+        <button class="admin-tab" onclick="adminTab('prison')">수감 기록</button>
+        <button class="admin-tab" onclick="adminTab('promotions')">승급/강등</button>
+        <button class="admin-tab" onclick="adminTab('logs')">로그</button>
+        <button class="admin-tab" onclick="adminTab('commands')">명령어</button>
+      </div>
+      <div id="admin-content"></div>
+    </div>
+  </div>
+
+  <!-- 건물 상호작용 모달 -->
+  <div id="building-modal" class="modal-overlay">
+    <div class="modal">
+      <button class="close-btn" onclick="closeBuildingModal()">&times;</button>
+      <h2 id="building-modal-title"></h2>
+      <div id="building-modal-content"></div>
+    </div>
+  </div>
+
+  <!-- CCTV 오버레이 -->
+  <div id="cctv-overlay">
+    <div class="cctv-header">
+      <span id="cctv-cam-id">CAM-01</span>
+      <span id="cctv-location">사령부</span>
+      <span id="cctv-time">00:00:00</span>
+    </div>
+    <canvas id="cctv-canvas" width="600" height="400"></canvas>
+    <div class="cctv-info">
+      <span id="cctv-players">감지된 인원 없음</span>
+    </div>
+    <div class="cctv-controls">
+      <button class="cctv-btn" onclick="cctvPrev()">◀ 이전</button>
+      <button class="cctv-btn cctv-close" onclick="closeCCTV()">✕ 닫기</button>
+      <button class="cctv-btn" onclick="cctvNext()">다음 ▶</button>
+    </div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/js/game.js"></script>
+</body>
+</html>

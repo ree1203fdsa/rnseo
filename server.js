@@ -1,17 +1,14 @@
 require('dotenv').config();
 const express = require('express');
 const session = require('express-session');
-const http = require('http');
-const { Server } = require('socket.io');
 const path = require('path');
 const { initDatabase } = require('./database/init');
 
 const app = express();
-const server = http.createServer(app);
-const io = new Server(server);
-
 const db = initDatabase();
 app.set('db', db);
+
+const IS_VERCEL = !!process.env.VERCEL;
 
 const RANKS = [
   '훈련병', '이등병', '일등병', '상등병', '병장',
@@ -32,16 +29,14 @@ app.use(sessionMiddleware);
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-io.use((socket, next) => {
-  sessionMiddleware(socket.request, {}, next);
-});
-
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/exam', require('./routes/exam'));
 app.use('/api/admin', require('./routes/admin'));
 
+// ==================== REST API for chat (works on both local and Vercel) ====================
 const recentMessages = [];
 const MAX_RECENT = 50;
+const onlineUsers = new Map();
 
 function addRecentMessage(msg) {
   recentMessages.push(msg);
@@ -72,7 +67,6 @@ app.post('/api/chat', async (req, res) => {
       message: msg,
       sent_at: Date.now()
     });
-    if (io) io.emit('chat', chatMsg);
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: '전송 실패' });
@@ -87,105 +81,141 @@ app.get('/api/poll', (req, res) => {
   res.json({ messages, online, timestamp: Date.now() });
 });
 
-const onlineUsers = new Map();
+// ==================== Socket.IO (local only, not on Vercel) ====================
+let io = null;
 
-io.on('connection', (socket) => {
-  const session = socket.request.session;
-  if (!session || !session.userId) {
-    socket.disconnect();
-    return;
-  }
+if (!IS_VERCEL) {
+  const http = require('http');
+  const { Server } = require('socket.io');
+  const server = http.createServer(app);
+  io = new Server(server);
 
-  const userId = session.userId;
-  onlineUsers.set(userId, {
-    socketId: socket.id,
-    nickname: session.nickname,
-    userId
+  io.use((socket, next) => {
+    sessionMiddleware(socket.request, {}, next);
   });
 
-  broadcastOnlineUsers();
+  io.on('connection', (socket) => {
+    const sess = socket.request.session;
+    if (!sess || !sess.userId) {
+      socket.disconnect();
+      return;
+    }
 
-  socket.on('chat', async (data) => {
-    if (!data || !data.message || typeof data.message !== 'string') return;
-    const msg = data.message.trim().substring(0, 500);
-    if (!msg) return;
+    const userId = sess.userId;
+    onlineUsers.set(userId, {
+      socketId: socket.id,
+      nickname: sess.nickname,
+      userId
+    });
 
-    try {
-      const snap = await db.ref(`users/${userId}`).once('value');
-      const user = snap.val();
-      if (!user) return;
+    broadcastOnlineUsers();
 
-      const prisonSnap = await db.ref('prison_records')
-        .orderByChild('user_id').equalTo(userId).once('value');
-      let isJailed = false;
-      prisonSnap.forEach(child => {
-        const rec = child.val();
-        if (!rec.released && new Date(rec.release_at).getTime() > Date.now()) {
-          isJailed = true;
-        }
-      });
+    socket.on('chat', async (data) => {
+      if (!data || !data.message || typeof data.message !== 'string') return;
+      const msg = data.message.trim().substring(0, 500);
+      if (!msg) return;
 
-      if (msg.startsWith('/')) {
-        if (isJailed) {
-          socket.emit('system', '수감 중에는 명령어를 사용할 수 없습니다.');
+      try {
+        const snap = await db.ref(`users/${userId}`).once('value');
+        const user = snap.val();
+        if (!user) return;
+
+        const prisonSnap = await db.ref('prison_records')
+          .orderByChild('user_id').equalTo(userId).once('value');
+        let isJailed = false;
+        prisonSnap.forEach(child => {
+          const rec = child.val();
+          if (!rec.released && new Date(rec.release_at).getTime() > Date.now()) {
+            isJailed = true;
+          }
+        });
+
+        if (msg.startsWith('/')) {
+          if (isJailed) {
+            socket.emit('system', '수감 중에는 명령어를 사용할 수 없습니다.');
+            return;
+          }
+          await handleCommand(socket, userId, user, msg);
           return;
         }
-        await handleCommand(socket, userId, user, msg);
-        return;
-      }
 
-      if (isJailed) {
-        io.emit('chat', {
+        if (isJailed) {
+          io.emit('chat', {
+            nickname: user.nickname,
+            rank: RANKS[user.rank_index],
+            message: msg,
+            isJailed: true,
+            timestamp: Date.now()
+          });
+          return;
+        }
+
+        await db.ref('chat_messages').push().set({
+          user_id: userId,
+          nickname: user.nickname,
+          message: msg,
+          sent_at: Date.now()
+        });
+
+        const chatMsg = {
           nickname: user.nickname,
           rank: RANKS[user.rank_index],
           message: msg,
-          isJailed: true,
+          isAdmin: !!user.is_admin,
           timestamp: Date.now()
-        });
-        return;
+        };
+        addRecentMessage(chatMsg);
+        io.emit('chat', chatMsg);
+      } catch (err) {
+        console.error('Chat error:', err);
       }
+    });
 
-      await db.ref('chat_messages').push().set({
-        user_id: userId,
-        nickname: user.nickname,
-        message: msg,
-        sent_at: Date.now()
-      });
+    socket.on('position', async (data) => {
+      if (!data || typeof data.x !== 'number') return;
+      try {
+        await db.ref(`users/${userId}/position`).set({
+          x: data.x, y: data.y || 0, z: data.z || 0
+        });
+        const snap = await db.ref(`users/${userId}/rank_index`).once('value');
+        socket.broadcast.emit('playerMoved', {
+          userId,
+          nickname: sess.nickname,
+          rankIndex: snap.val() || 0,
+          x: data.x, y: data.y || 0, z: data.z || 0
+        });
+      } catch (err) {}
+    });
 
-      io.emit('chat', {
-        nickname: user.nickname,
-        rank: RANKS[user.rank_index],
-        message: msg,
-        isAdmin: !!user.is_admin,
-        timestamp: Date.now()
-      });
-    } catch (err) {
-      console.error('Chat error:', err);
-    }
+    socket.on('disconnect', () => {
+      onlineUsers.delete(userId);
+      io.emit('playerLeft', { userId });
+      broadcastOnlineUsers();
+    });
   });
 
-  socket.on('position', async (data) => {
-    if (!data || typeof data.x !== 'number') return;
+  // Prison auto-release (local only)
+  setInterval(async () => {
     try {
-      await db.ref(`users/${userId}/position`).set({
-        x: data.x, y: data.y || 0, z: data.z || 0
-      });
-      const snap = await db.ref(`users/${userId}/rank_index`).once('value');
-      socket.broadcast.emit('playerMoved', {
-        userId,
-        nickname: session.nickname,
-        rankIndex: snap.val() || 0,
-        x: data.x, y: data.y || 0, z: data.z || 0
+      const snap = await db.ref('prison_records').orderByChild('released').equalTo(false).once('value');
+      if (!snap.exists()) return;
+      snap.forEach(child => {
+        const rec = child.val();
+        if (new Date(rec.release_at).getTime() <= Date.now()) {
+          db.ref(`prison_records/${child.key}`).update({ released: true });
+          io.emit('system', `${rec.nickname}님이 자동 석방되었습니다.`);
+          io.emit('playerReleased', { userId: rec.user_id, nickname: rec.nickname });
+        }
       });
     } catch (err) {}
-  });
+  }, 30000);
 
-  socket.on('disconnect', () => {
-    onlineUsers.delete(userId);
-    io.emit('playerLeft', { userId });
-    broadcastOnlineUsers();
+  const PORT = process.env.PORT || 3000;
+  server.listen(PORT, () => {
+    console.log(`대한민국 육군 게임 서버가 포트 ${PORT}에서 실행 중입니다.`);
+    console.log(`http://localhost:${PORT}`);
   });
-});
+}
 
 async function handleCommand(socket, userId, user, msg) {
   const parts = msg.substring(1).split(' ');
@@ -467,7 +497,6 @@ async function handleCommand(socket, userId, user, msg) {
     case 'command': {
       const subCmd = parts[1];
       if (!subCmd) { socket.emit('system', '사용법: /command [status|roster|briefing|report|announcement]'); break; }
-      const rankTier2 = user.rank_index <= 4 ? 'soldier' : user.rank_index <= 8 ? 'nco' : 'officer';
       if (user.rank_index < 5 && !user.is_admin) {
         socket.emit('system', '지휘관 명령어는 부사관 이상만 사용할 수 있습니다.');
         break;
@@ -555,7 +584,6 @@ async function handleCommand(socket, userId, user, msg) {
     }
 
     case 'building': {
-      // Building interaction from client
       const buildingName = parts[1];
       const action = parts.slice(2).join(' ');
       socket.emit('system', `[${buildingName}] ${action} — 처리 완료`);
@@ -586,6 +614,7 @@ async function handleCommand(socket, userId, user, msg) {
 }
 
 function broadcastOnlineUsers() {
+  if (!io) return;
   const users = Array.from(onlineUsers.values()).map(u => ({
     nickname: u.nickname,
     userId: u.userId
@@ -593,28 +622,4 @@ function broadcastOnlineUsers() {
   io.emit('onlineUsers', users);
 }
 
-setInterval(async () => {
-  try {
-    const snap = await db.ref('prison_records').orderByChild('released').equalTo(false).once('value');
-    if (!snap.exists()) return;
-    snap.forEach(child => {
-      const rec = child.val();
-      if (new Date(rec.release_at).getTime() <= Date.now()) {
-        db.ref(`prison_records/${child.key}`).update({ released: true });
-        io.emit('system', `${rec.nickname}님이 자동 석방되었습니다.`);
-        io.emit('playerReleased', { userId: rec.user_id, nickname: rec.nickname });
-      }
-    });
-  } catch (err) {}
-}, 30000);
-
-const PORT = process.env.PORT || 3000;
-
-if (process.env.VERCEL) {
-  module.exports = app;
-} else {
-  server.listen(PORT, () => {
-    console.log(`대한민국 육군 게임 서버가 포트 ${PORT}에서 실행 중입니다.`);
-    console.log(`http://localhost:${PORT}`);
-  });
-}
+module.exports = app;
