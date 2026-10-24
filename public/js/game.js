@@ -385,6 +385,7 @@ function switchServer(num) {
 }
 
 // ==================== VEHICLE SYSTEM ====================
+let noclipMode = false;
 let currentVehicle = null;
 let vehicleMeshes = [];
 const VEHICLE_SPAWNS = [
@@ -550,6 +551,11 @@ function sendChat() {
     } else {
       openOutfitSelector();
     }
+    input.value = '';
+    return;
+  } else if (msg === '/to') {
+    noclipMode = !noclipMode;
+    appendSystem(noclipMode ? '[통과] 벽 통과 모드 활성화' : '[통과] 벽 통과 모드 비활성화');
     input.value = '';
     return;
   } else if (msg === '/텔레포트' || msg === '/tp') {
@@ -2962,9 +2968,10 @@ function animate() {
     newX = Math.max(-boundary, Math.min(boundary, newX));
     newZ = Math.max(-boundary, Math.min(boundary, newZ));
 
-    let blocked = false;
     const wallT = 0.3;
     const playerR = 0.3;
+    let blocked = false;
+    if (!noclipMode) {
     for (const b of buildings) {
       if (b.height < 1) continue;
       if (b.enterable) {
@@ -2983,6 +2990,7 @@ function animate() {
         }
       }
     }
+    } // end else (not noclip)
     if (!blocked) { player.position.x = newX; player.position.z = newZ; }
 
     // Check if player is inside a building
