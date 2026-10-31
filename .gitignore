@@ -1,3 +1,6 @@
 node_modules/
 .env
 .vercel/
+android-app/.gradle/
+android-app/app/build/
+android-app/local.properties
